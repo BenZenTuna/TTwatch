@@ -180,6 +180,43 @@ export interface MarketDataResponse {
   fetched_at: string;
 }
 
+export interface PriceHistoryResponse {
+  symbol: string;
+  trade_date: string;
+  open: number | null;
+  high: number | null;
+  low: number | null;
+  close: number | null;
+  adj_close: number | null;
+  volume: number | null;
+}
+
+export interface AssetMappingResponse {
+  id: string;
+  entity_name: string;
+  resolved_symbol: string | null;
+  resolution_method: string | null;
+  confidence: number;
+  is_verified: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface WatchlistItemCreate {
+  symbol: string;
+  asset_type: string;
+  added_reason?: string | null;
+  notes?: string | null;
+  target_price?: number | null;
+  stop_loss?: number | null;
+}
+
+export interface PriceAlertCreate {
+  symbol: string;
+  condition: "above" | "below" | "crosses_above" | "crosses_below";
+  threshold: number;
+}
+
 export interface SearchResult {
   article: ArticleResponse;
   score: number;

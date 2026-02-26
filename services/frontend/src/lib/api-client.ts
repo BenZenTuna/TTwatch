@@ -19,10 +19,14 @@ import type {
   SourceResponse,
   SavedQueryResponse,
   WatchlistItemResponse,
+  WatchlistItemCreate,
   InvestmentAnalysisResponse,
   CorrelationSignalResponse,
   PriceAlertResponse,
+  PriceAlertCreate,
   MarketDataResponse,
+  PriceHistoryResponse,
+  AssetMappingResponse,
   SearchResult,
 } from "./types";
 
@@ -334,6 +338,35 @@ export async function getPriceAlerts(): Promise<PriceAlertResponse[]> {
   return data;
 }
 
+export async function addWatchlistItem(
+  topicId: string,
+  item: WatchlistItemCreate
+): Promise<WatchlistItemResponse> {
+  const { data } = await api.post<WatchlistItemResponse>(
+    `/api/topics/${topicId}/watchlist`,
+    item
+  );
+  return data;
+}
+
+export async function removeWatchlistItem(itemId: string): Promise<void> {
+  await api.delete(`/api/watchlist/${itemId}`);
+}
+
+export async function createPriceAlert(
+  alert: PriceAlertCreate
+): Promise<PriceAlertResponse> {
+  const { data } = await api.post<PriceAlertResponse>(
+    "/api/price-alerts",
+    alert
+  );
+  return data;
+}
+
+export async function deletePriceAlert(alertId: string): Promise<void> {
+  await api.delete(`/api/price-alerts/${alertId}`);
+}
+
 export async function getMarketData(
   symbol: string
 ): Promise<MarketDataResponse> {
@@ -341,6 +374,34 @@ export async function getMarketData(
     `/api/market-data/${symbol}`
   );
   return data;
+}
+
+export async function getPriceHistory(
+  symbol: string,
+  limit = 90
+): Promise<PriceHistoryResponse[]> {
+  const { data } = await api.get<PriceHistoryResponse[]>(
+    `/api/market-data/${symbol}/history`,
+    { params: { limit } }
+  );
+  return data;
+}
+
+export async function getAssetMappings(
+  topicId: string
+): Promise<AssetMappingResponse[]> {
+  const { data } = await api.get<AssetMappingResponse[]>(
+    `/api/topics/${topicId}/asset-mappings`
+  );
+  return data;
+}
+
+export async function verifyAssetMapping(mappingId: string): Promise<void> {
+  await api.post(`/api/asset-mappings/${mappingId}/verify`);
+}
+
+export async function rejectAssetMapping(mappingId: string): Promise<void> {
+  await api.post(`/api/asset-mappings/${mappingId}/reject`);
 }
 
 export default api;

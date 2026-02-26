@@ -56,7 +56,10 @@ export function Sidebar({ wsConnected }: SidebarProps) {
       {/* Nav links */}
       <nav className="flex-1 overflow-y-auto px-3 py-4 space-y-1">
         {navItems.map((item) => {
-          const active = pathname === item.href;
+          const active =
+            item.href === "/dashboard"
+              ? pathname === "/dashboard"
+              : pathname.startsWith(item.href);
           return (
             <button
               key={item.href}
