@@ -4,8 +4,8 @@
 set -e
 
 MODEL_DIR="$(cd "$(dirname "$0")/.." && pwd)/models"
-MODEL_NAME="Qwen/Qwen2.5-32B-Instruct-AWQ"
-TARGET_DIR="${MODEL_DIR}/Qwen2.5-32B-Instruct-AWQ"
+MODEL_NAME="Qwen/Qwen3-32B-AWQ"
+TARGET_DIR="${MODEL_DIR}/Qwen3-32B-AWQ"
 
 if [ -d "$TARGET_DIR" ] && [ "$(ls -A "$TARGET_DIR" 2>/dev/null)" ]; then
     echo "Model already exists at ${TARGET_DIR}"
