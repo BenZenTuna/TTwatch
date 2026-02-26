@@ -90,4 +90,8 @@ app.conf.beat_schedule = {
         "task": "cleanup_orphaned_qdrant_points",
         "schedule": crontab(hour=4, minute=0),  # Daily at 4:00 AM
     },
+    "check-service-versions": {
+        "task": "check_service_versions",
+        "schedule": crontab(hour=6, minute=30),  # Daily at 6:30 AM
+    },
 }

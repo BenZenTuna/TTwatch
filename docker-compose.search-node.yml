@@ -1,11 +1,11 @@
 # docker-compose.search-node.yml
 services:
   searxng:
-    image: searxng/searxng:2024.11.17-b17f4d04a
+    image: searxng/searxng:${SEARXNG_VERSION:-latest}
     ports: ["8080:8080"]
     volumes: [./config/searxng:/etc/searxng]
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:8080/healthz"]
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:8080/healthz"]
       interval: 10s
       timeout: 5s
       retries: 3

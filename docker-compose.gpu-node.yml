@@ -20,7 +20,7 @@ services:
     restart: unless-stopped
 
   vllm:
-    image: vllm/vllm-openai:v0.16.0
+    image: vllm/vllm-openai:${VLLM_VERSION:-v0.16.0}
     deploy:
       resources:
         reservations:

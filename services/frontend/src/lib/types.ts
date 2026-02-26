@@ -11,6 +11,7 @@ export interface UserResponse {
   email: string;
   display_name: string;
   is_active: boolean;
+  is_admin: boolean;
   max_topics: number;
   max_articles_per_topic: number;
   max_api_keys: number;

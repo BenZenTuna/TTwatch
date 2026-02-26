@@ -20,6 +20,7 @@ class UserResponse(BaseModel):
     email: str
     display_name: str
     is_active: bool
+    is_admin: bool
     max_topics: int
     max_articles_per_topic: int
     max_api_keys: int

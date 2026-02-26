@@ -404,4 +404,35 @@ export async function rejectAssetMapping(mappingId: string): Promise<void> {
   await api.post(`/api/asset-mappings/${mappingId}/reject`);
 }
 
+// ── Admin ──
+
+export interface ServiceVersionStatus {
+  name: string;
+  env_var: string;
+  current: string;
+  latest: string | null;
+  has_update: boolean;
+  source_type: string;
+  changelog_url: string;
+}
+
+export interface VersionCheckResponse {
+  checked_at: string | null;
+  services: ServiceVersionStatus[];
+}
+
+export async function getVersionStatus(): Promise<VersionCheckResponse> {
+  const { data } = await api.get<VersionCheckResponse>(
+    "/api/admin/versions"
+  );
+  return data;
+}
+
+export async function triggerVersionCheck(): Promise<VersionCheckResponse> {
+  const { data } = await api.post<VersionCheckResponse>(
+    "/api/admin/versions/check"
+  );
+  return data;
+}
+
 export default api;

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useRouter, usePathname } from "next/navigation";
 import {
   LayoutDashboard,
@@ -15,7 +15,7 @@ import {
   Shield,
 } from "lucide-react";
 import { useAppStore } from "@/lib/store";
-import { getTopics, logout } from "@/lib/api-client";
+import { getTopics, logout, getVersionStatus } from "@/lib/api-client";
 
 interface SidebarProps {
   wsConnected: boolean;
@@ -26,12 +26,24 @@ export function Sidebar({ wsConnected }: SidebarProps) {
   const pathname = usePathname();
   const { topics, setTopics, selectedTopicId, selectTopic, user } =
     useAppStore();
+  const [hasUpdates, setHasUpdates] = useState(false);
 
   useEffect(() => {
     getTopics()
       .then(setTopics)
       .catch(() => {});
   }, [setTopics]);
+
+  // Admin: check for available service updates
+  useEffect(() => {
+    if (!user?.is_admin) return;
+    getVersionStatus()
+      .then((data) => {
+        const updates = data.services?.some((s) => s.has_update) ?? false;
+        setHasUpdates(updates);
+      })
+      .catch(() => {});
+  }, [user?.is_admin]);
 
   async function handleLogout() {
     await logout();
@@ -135,7 +147,12 @@ export function Sidebar({ wsConnected }: SidebarProps) {
           onClick={() => router.push("/dashboard/settings")}
           className="w-full flex items-center gap-3 px-3 py-2 rounded-md text-sm text-gray-400 hover:text-gray-200 hover:bg-surface-overlay transition-colors"
         >
-          <Settings className="w-4 h-4" />
+          <div className="relative">
+            <Settings className="w-4 h-4" />
+            {hasUpdates && (
+              <span className="absolute -top-1 -right-1 w-2 h-2 bg-amber-400 rounded-full" />
+            )}
+          </div>
           Settings
         </button>
 
