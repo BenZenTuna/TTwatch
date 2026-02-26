@@ -1,0 +1,20 @@
+# docker-compose.lan.yml
+# Usage: docker compose -f docker-compose.yml -f docker-compose.lan.yml up -d
+
+services:
+  searxng:
+    profiles: ["disabled"]
+
+  worker-io:
+    depends_on:
+      postgres: { condition: service_healthy }
+      qdrant: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      minio: { condition: service_healthy }
+
+  api:
+    depends_on:
+      postgres: { condition: service_healthy }
+      qdrant: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      minio: { condition: service_healthy }

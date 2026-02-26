@@ -1,0 +1,71 @@
+services:
+  embedder:
+    build: ./services/embedder
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices: [{capabilities: [gpu]}]
+    ports: ["8101:8001"]
+    environment:
+      CUDA_VISIBLE_DEVICES: "0"
+      MODEL_NAME: "BAAI/bge-m3"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8001/health"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+
+  vllm:
+    image: vllm/vllm-openai:v0.7.3
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices: [{capabilities: [gpu]}]
+    volumes: [./models:/models]
+    command: >
+      --model /models/Qwen2.5-32B-Instruct-AWQ
+      --quantization awq
+      --gpu-memory-utilization 0.85
+      --max-model-len 32768
+      --max-num-seqs 8
+      --enable-prefix-caching
+      --port 8000
+    ports: ["8100:8000"]
+    depends_on:
+      embedder: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/health"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 120s
+
+  # Override dependencies to include GPU services
+  api:
+    depends_on:
+      postgres: { condition: service_healthy }
+      qdrant: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      minio: { condition: service_healthy }
+      vllm: { condition: service_healthy }
+      embedder: { condition: service_healthy }
+
+  worker-io:
+    depends_on:
+      postgres: { condition: service_healthy }
+      qdrant: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      minio: { condition: service_healthy }
+      vllm: { condition: service_healthy }
+      embedder: { condition: service_healthy }
+
+  worker-cpu:
+    depends_on:
+      postgres: { condition: service_healthy }
+      qdrant: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      minio: { condition: service_healthy }
+      vllm: { condition: service_healthy }
+      embedder: { condition: service_healthy }

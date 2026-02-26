@@ -1,0 +1,14 @@
+.git
+.env
+.env.*
+models/
+backups/
+node_modules/
+.next/
+__pycache__
+*.pyc
+.vscode
+.idea
+docs/
+*.md
+!requirements.txt

@@ -1,0 +1,48 @@
+services:
+  api:
+    environment:
+      VLLM_URL: ""
+      LLM_PROVIDER: cloud
+      CLOUD_LLM_PROVIDER: ${CLOUD_LLM_PROVIDER:-openai}
+      CLOUD_LLM_API_KEY: ${CLOUD_LLM_API_KEY}
+      CLOUD_LLM_MODEL: ${CLOUD_LLM_MODEL:-gpt-4o-mini}
+      EMBEDDER_URL: ""
+      CLOUD_EMBEDDING_PROVIDER: ${CLOUD_EMBEDDING_PROVIDER:-openai}
+      CLOUD_EMBEDDING_MODEL: ${CLOUD_EMBEDDING_MODEL:-text-embedding-3-large}
+      EMBEDDING_DIMENSION: "3072"
+
+  worker-io:
+    environment:
+      VLLM_URL: ""
+      LLM_PROVIDER: cloud
+      CLOUD_LLM_PROVIDER: ${CLOUD_LLM_PROVIDER:-openai}
+      CLOUD_LLM_API_KEY: ${CLOUD_LLM_API_KEY}
+      CLOUD_LLM_MODEL: ${CLOUD_LLM_MODEL:-gpt-4o-mini}
+      EMBEDDER_URL: ""
+      CLOUD_EMBEDDING_PROVIDER: ${CLOUD_EMBEDDING_PROVIDER:-openai}
+      CLOUD_EMBEDDING_MODEL: ${CLOUD_EMBEDDING_MODEL:-text-embedding-3-large}
+      EMBEDDING_DIMENSION: "3072"
+
+  worker-cpu:
+    environment:
+      VLLM_URL: ""
+      LLM_PROVIDER: cloud
+      CLOUD_LLM_PROVIDER: ${CLOUD_LLM_PROVIDER:-openai}
+      CLOUD_LLM_API_KEY: ${CLOUD_LLM_API_KEY}
+      CLOUD_LLM_MODEL: ${CLOUD_LLM_MODEL:-gpt-4o-mini}
+      EMBEDDER_URL: ""
+      CLOUD_EMBEDDING_PROVIDER: ${CLOUD_EMBEDDING_PROVIDER:-openai}
+      CLOUD_EMBEDDING_MODEL: ${CLOUD_EMBEDDING_MODEL:-text-embedding-3-large}
+      EMBEDDING_DIMENSION: "3072"
+
+  scheduler:
+    environment:
+      VLLM_URL: ""
+      LLM_PROVIDER: cloud
+      CLOUD_LLM_PROVIDER: ${CLOUD_LLM_PROVIDER:-openai}
+      CLOUD_LLM_API_KEY: ${CLOUD_LLM_API_KEY}
+      CLOUD_LLM_MODEL: ${CLOUD_LLM_MODEL:-gpt-4o-mini}
+      EMBEDDER_URL: ""
+      CLOUD_EMBEDDING_PROVIDER: ${CLOUD_EMBEDDING_PROVIDER:-openai}
+      CLOUD_EMBEDDING_MODEL: ${CLOUD_EMBEDDING_MODEL:-text-embedding-3-large}
+      EMBEDDING_DIMENSION: "3072"

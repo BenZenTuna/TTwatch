@@ -1,0 +1,35 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: services/api/Dockerfile
+      target: dev
+    volumes:
+      - ./services/api/app:/app/app:ro
+    command: >
+      uvicorn app.main:app
+      --host 0.0.0.0 --port 8080
+      --reload --reload-dir /app/app
+    environment:
+      # NOTE: Cannot use *common-env here — YAML anchors don't cross file
+      # boundaries. Instead, the base compose already sets environment via
+      # merge. Only override or add dev-specific vars here.
+      DEBUG: "true"
+
+  worker-io:
+    volumes:
+      - ./services/worker/worker:/app/worker:ro
+    command: >
+      watchmedo auto-restart
+      --directory=/app/worker --pattern="*.py" --recursive --
+      celery -A worker.celeryconfig worker
+      --loglevel=debug --pool=solo --concurrency=1
+      -Q ttwatch:default
+
+  frontend:
+    volumes:
+      - ./services/frontend/src:/app/src:ro
+    environment:
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8080}
+      INTERNAL_API_URL: http://api:8080
+      WATCHPACK_POLLING: "true"

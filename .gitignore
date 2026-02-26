@@ -1,0 +1,37 @@
+# Environment
+.env
+.env.local
+
+# Models (downloaded separately)
+models/
+!models/.gitkeep
+
+# Backups
+backups/
+!backups/.gitkeep
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+.venv/
+venv/
+
+# Node
+node_modules/
+.next/
+.turbo/
+
+# Docker volumes
+pgdata/
+qdrant_data/
+redis_data/
+minio_data/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
