@@ -8,7 +8,8 @@ from app.services.llm_utils import parse_json_response
 class LocalVLLMProvider(LLMProvider):
     def __init__(self):
         self.base_url = settings.VLLM_URL
-        self.model = settings.LOCAL_MODEL_NAME
+        # vLLM registers models with their full path (e.g. /models/QwQ-32B-AWQ)
+        self.model = f"/models/{settings.LOCAL_MODEL_NAME}"
         self._client = httpx.AsyncClient(
             base_url=self.base_url,
             timeout=httpx.Timeout(120.0, connect=10.0),
@@ -26,7 +27,10 @@ class LocalVLLMProvider(LLMProvider):
             },
         )
         resp.raise_for_status()
-        return resp.json()["choices"][0]["message"]["content"]
+        msg = resp.json()["choices"][0]["message"]
+        # Reasoning models (QwQ, DeepSeek-R1) may put output in "reasoning"
+        # field when using --reasoning-parser; fall back to it if content is null
+        return msg.get("content") or msg.get("reasoning") or ""
 
     async def generate_json(self, messages, **kwargs):
         kwargs.setdefault("temperature", 0.1)

@@ -65,7 +65,9 @@ class SyncLLMClient:
     def __init__(self):
         self.provider = os.environ.get("LLM_PROVIDER", "local")
         self.vllm_url = os.environ.get("VLLM_URL", "http://vllm:8000/v1")
-        self.model = os.environ.get("LOCAL_MODEL_NAME", "Qwen2.5-32B-Instruct-AWQ")
+        model_name = os.environ.get("LOCAL_MODEL_NAME", "Qwen2.5-32B-Instruct-AWQ")
+        # vLLM registers models with their full path (e.g. /models/QwQ-32B-AWQ)
+        self.model = f"/models/{model_name}" if self.provider == "local" else model_name
         self._verified = False
 
         if self.provider == "cloud":
@@ -141,7 +143,10 @@ class SyncLLMClient:
                 body["response_format"] = kwargs["response_format"]
             resp = self._client.post("/chat/completions", json=body)
             resp.raise_for_status()
-            return resp.json()["choices"][0]["message"]["content"]
+            msg = resp.json()["choices"][0]["message"]
+            # Reasoning models (QwQ, DeepSeek-R1) may put output in "reasoning"
+            # field when using --reasoning-parser; fall back to it if content is null
+            return msg.get("content") or msg.get("reasoning") or ""
 
     def generate_json(self, messages: list[dict], **kwargs) -> dict:
         messages = copy.deepcopy(messages)

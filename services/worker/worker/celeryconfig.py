@@ -29,8 +29,27 @@ app.conf.task_serializer = "json"
 app.conf.result_serializer = "json"
 app.conf.accept_content = ["json"]
 
-# Task discovery
-app.autodiscover_tasks(["worker.tasks"])
+# Task discovery — explicitly include all task modules
+app.conf.include = [
+    "worker.tasks.briefing",
+    "worker.tasks.cluster",
+    "worker.tasks.correlation_signals",
+    "worker.tasks.coverage_gaps",
+    "worker.tasks.embed",
+    "worker.tasks.entities",
+    "worker.tasks.ingest",
+    "worker.tasks.investment_analysis",
+    "worker.tasks.maintenance",
+    "worker.tasks.periodic",
+    "worker.tasks.price_alerts",
+    "worker.tasks.resolve_ticker",
+    "worker.tasks.search",
+    "worker.tasks.sentiment",
+    "worker.tasks.sentiment_agg",
+    "worker.tasks.summarize",
+    "worker.tasks.trends",
+    "worker.tasks.version_check",
+]
 
 # Beat schedule — all periodic tasks
 app.conf.beat_schedule = {
