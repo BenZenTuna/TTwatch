@@ -93,7 +93,10 @@ export function Sidebar({ wsConnected }: SidebarProps) {
             topics.map((topic) => (
               <button
                 key={topic.id}
-                onClick={() => selectTopic(topic.id)}
+                onClick={() => {
+                  selectTopic(topic.id);
+                  router.push(`/dashboard/topics/${topic.id}`);
+                }}
                 className={`w-full flex items-center gap-2 px-3 py-1.5 rounded-md text-sm transition-colors ${
                   selectedTopicId === topic.id
                     ? "bg-accent/10 text-accent"
