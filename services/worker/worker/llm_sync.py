@@ -92,13 +92,13 @@ class SyncLLMClient:
             self._client = httpx.Client(
                 base_url=base_url,
                 headers=headers,
-                timeout=httpx.Timeout(120.0, connect=10.0),
+                timeout=httpx.Timeout(300.0, connect=10.0),
             )
             self._is_anthropic = cloud_provider == "anthropic"
         else:
             self._client = httpx.Client(
                 base_url=self.vllm_url,
-                timeout=httpx.Timeout(120.0, connect=10.0),
+                timeout=httpx.Timeout(300.0, connect=10.0),
             )
             self._is_anthropic = False
 

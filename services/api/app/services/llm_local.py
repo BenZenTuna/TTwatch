@@ -12,7 +12,7 @@ class LocalVLLMProvider(LLMProvider):
         self.model = f"/models/{settings.LOCAL_MODEL_NAME}"
         self._client = httpx.AsyncClient(
             base_url=self.base_url,
-            timeout=httpx.Timeout(120.0, connect=10.0),
+            timeout=httpx.Timeout(300.0, connect=10.0),
             limits=httpx.Limits(max_connections=20, max_keepalive_connections=10),
         )
 
