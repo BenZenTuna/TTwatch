@@ -16,3 +16,4 @@ PyJWT>=2.9.0
 tenacity>=9.0.0
 trafilatura>=1.12.0
 python-multipart>=0.0.12
+celery>=5.4.0
