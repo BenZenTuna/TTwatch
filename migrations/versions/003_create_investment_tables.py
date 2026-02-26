@@ -188,9 +188,10 @@ def upgrade() -> None:
     op.create_index("idx_market_data_cache_symbol", "market_data_cache", ["symbol", sa.text("fetched_at DESC")])
 
     # Deduplicate market data fetches: one snapshot per symbol per hour
+    # Cast to timestamp (without tz) so date_trunc is IMMUTABLE
     op.execute(
         "CREATE UNIQUE INDEX idx_market_data_cache_dedup "
-        "ON market_data_cache (symbol, date_trunc('hour', fetched_at))"
+        "ON market_data_cache (symbol, date_trunc('hour', fetched_at AT TIME ZONE 'UTC'))"
     )
 
     # ============================================================
