@@ -64,7 +64,10 @@ async def semantic_search(
     score_map = {str(hit.id): hit.score for hit in results}
 
     articles = await db.execute(
-        select(Article).where(Article.id.in_(article_ids))
+        select(Article).where(
+            Article.id.in_(article_ids),
+            Article.user_id == user.id,
+        )
     )
     article_map = {str(a.id): a for a in articles.scalars().all()}
 

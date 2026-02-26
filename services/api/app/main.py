@@ -114,25 +114,33 @@ app.add_middleware(
 )
 
 # Include routers
+from fastapi import Depends
+
 from app.routers import health, topics, clusters, articles, search, briefings
 from app.routers import entities, sentiment, sources, queries, investment, market_data
 from app.routers import users
 from app.auth.router import router as auth_router
+from app.deps import rate_limit_dependency
+
+# Rate-limited dependencies applied to all authenticated API routers.
+# FastAPI caches dependencies per request, so get_current_user (called inside
+# rate_limit_dependency) runs only once even though routers also depend on it.
+_rate_limited = [Depends(rate_limit_dependency)]
 
 app.include_router(health.router, tags=["health"])
 app.include_router(auth_router, prefix="/auth", tags=["auth"])
-app.include_router(users.router, prefix="/api", tags=["users"])
-app.include_router(topics.router, prefix="/api", tags=["topics"])
-app.include_router(clusters.router, prefix="/api", tags=["clusters"])
-app.include_router(articles.router, prefix="/api", tags=["articles"])
-app.include_router(search.router, prefix="/api", tags=["search"])
-app.include_router(briefings.router, prefix="/api", tags=["briefings"])
-app.include_router(entities.router, prefix="/api", tags=["entities"])
-app.include_router(sentiment.router, prefix="/api", tags=["sentiment"])
-app.include_router(sources.router, prefix="/api", tags=["sources"])
-app.include_router(queries.router, prefix="/api", tags=["queries"])
-app.include_router(investment.router, prefix="/api", tags=["investment"])
-app.include_router(market_data.router, prefix="/api", tags=["market_data"])
+app.include_router(users.router, prefix="/api", tags=["users"], dependencies=_rate_limited)
+app.include_router(topics.router, prefix="/api", tags=["topics"], dependencies=_rate_limited)
+app.include_router(clusters.router, prefix="/api", tags=["clusters"], dependencies=_rate_limited)
+app.include_router(articles.router, prefix="/api", tags=["articles"], dependencies=_rate_limited)
+app.include_router(search.router, prefix="/api", tags=["search"], dependencies=_rate_limited)
+app.include_router(briefings.router, prefix="/api", tags=["briefings"], dependencies=_rate_limited)
+app.include_router(entities.router, prefix="/api", tags=["entities"], dependencies=_rate_limited)
+app.include_router(sentiment.router, prefix="/api", tags=["sentiment"], dependencies=_rate_limited)
+app.include_router(sources.router, prefix="/api", tags=["sources"], dependencies=_rate_limited)
+app.include_router(queries.router, prefix="/api", tags=["queries"], dependencies=_rate_limited)
+app.include_router(investment.router, prefix="/api", tags=["investment"], dependencies=_rate_limited)
+app.include_router(market_data.router, prefix="/api", tags=["market_data"], dependencies=_rate_limited)
 
 
 # === WebSocket endpoint for real-time dashboard updates ===
