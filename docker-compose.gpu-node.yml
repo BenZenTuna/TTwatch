@@ -27,13 +27,12 @@ services:
           devices: [{capabilities: [gpu]}]
     volumes: [./models:/models]
     command: >
-      --model /models/Qwen3-32B-AWQ
+      --model /models/${LOCAL_MODEL_NAME:-Qwen3-32B-AWQ}
       --quantization awq
       --gpu-memory-utilization 0.85
       --max-model-len 32768
       --max-num-seqs 8
       --enable-prefix-caching
-      --enable-reasoning
       --reasoning-parser deepseek_r1
       --port 8000
       --host 0.0.0.0

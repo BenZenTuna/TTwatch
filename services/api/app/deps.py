@@ -53,7 +53,10 @@ async def get_current_user(
     api_key: str = Header(None, alias="X-API-Key"),
     db: AsyncSession = Depends(get_db),
 ) -> User:
-    """Resolve user from JWT token OR API key. Exactly one must be present."""
+    """Resolve user from JWT token OR API key. Exactly one must be present.
+    Also sets the RLS context variable for row-level security policies."""
+
+    user: User | None = None
 
     if credentials and credentials.credentials:
         try:
@@ -75,7 +78,6 @@ async def get_current_user(
         user = await db.get(User, user_id)
         if not user or not user.is_active:
             raise HTTPException(401, "User not found or inactive")
-        return user
 
     elif api_key:
         prefix = api_key[:14]
@@ -91,10 +93,20 @@ async def get_current_user(
                 user = await db.get(User, candidate.user_id)
                 if not user or not user.is_active:
                     raise HTTPException(401, "User inactive")
-                return user
-        raise HTTPException(401, "Invalid API key")
+                break
+        if not user:
+            raise HTTPException(401, "Invalid API key")
 
-    raise HTTPException(401, "Authentication required")
+    else:
+        raise HTTPException(401, "Authentication required")
+
+    # Set RLS context for row-level security policies.
+    # Uses validated UUID (only [0-9a-f-] chars) so f-string is safe here.
+    validated_id = str(uuid.UUID(str(user.id)))
+    await db.execute(text(
+        f"SET LOCAL ttwatch.current_user_id = '{validated_id}'"
+    ))
+    return user
 
 
 async def set_rls_context(
