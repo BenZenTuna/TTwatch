@@ -62,6 +62,75 @@ def cleanup_stale_snapshots():
         """))
 
 
+_HISTORY_UPSERT = """
+    INSERT INTO price_history (symbol, trade_date, open, high, low, close, adj_close, volume, source)
+    VALUES (:symbol, :trade_date, :open, :high, :low, :close, :adj_close, :volume, :source)
+    ON CONFLICT (symbol, trade_date) DO UPDATE SET
+        open = EXCLUDED.open, high = EXCLUDED.high, low = EXCLUDED.low,
+        close = EXCLUDED.close, adj_close = EXCLUDED.adj_close,
+        volume = EXCLUDED.volume, source = EXCLUDED.source
+"""
+
+
+def _fetch_equity_history(session, sa_text, symbol: str):
+    """Fetch 6 months of daily OHLCV from yfinance and upsert into price_history."""
+    import yfinance as yf
+    df = yf.Ticker(symbol).history(period="6mo", interval="1d")
+    if df.empty:
+        return
+    rows = 0
+    for date, row in df.iterrows():
+        session.execute(sa_text(_HISTORY_UPSERT), {
+            "symbol": symbol,
+            "trade_date": date.date(),
+            "open": float(row["Open"]),
+            "high": float(row["High"]),
+            "low": float(row["Low"]),
+            "close": float(row["Close"]),
+            "adj_close": float(row["Close"]),
+            "volume": int(row["Volume"]) if row["Volume"] else None,
+            "source": "yfinance",
+        })
+        rows += 1
+    logger.info(f"Price history: {rows} days for {symbol}")
+
+
+def _fetch_crypto_history(session, sa_text, httpx, symbol: str, cg_id: str):
+    """Fetch 180 days of daily OHLC from CoinGecko and upsert into price_history."""
+    from datetime import datetime, timezone
+    with httpx.Client(timeout=30.0) as client:
+        resp = client.get(
+            f"https://api.coingecko.com/api/v3/coins/{cg_id}/ohlc",
+            params={"vs_currency": "usd", "days": "180"},
+        )
+        resp.raise_for_status()
+        ohlc = resp.json()
+    if not ohlc:
+        return
+    # CoinGecko OHLC: [[timestamp_ms, open, high, low, close], ...]
+    # Group by date (multiple candles per day), take first open and last close
+    from collections import defaultdict
+    daily = defaultdict(list)
+    for candle in ohlc:
+        dt = datetime.fromtimestamp(candle[0] / 1000, tz=timezone.utc).date()
+        daily[dt].append(candle)
+    rows = 0
+    for dt, candles in daily.items():
+        o = candles[0][1]
+        h = max(c[2] for c in candles)
+        l = min(c[3] for c in candles)
+        c = candles[-1][4]
+        session.execute(sa_text(_HISTORY_UPSERT), {
+            "symbol": symbol,
+            "trade_date": dt,
+            "open": o, "high": h, "low": l, "close": c, "adj_close": c,
+            "volume": None,
+            "source": "coingecko",
+        })
+        rows += 1
+    logger.info(f"Price history: {rows} days for {symbol}")
+
+
 @app.task(name="fetch_market_data")
 def fetch_market_data(symbol: str):
     """Fetch current market data for a single symbol and cache it.
@@ -158,7 +227,7 @@ def fetch_market_data(symbol: str):
                         (gen_random_uuid(), :symbol, :asset_type, :price, :price_change_pct,
                          :volume, :market_cap, :pe_ratio, :eps, :dividend_yield, :beta,
                          :fifty_two_week_high, :fifty_two_week_low, :data_source, now())
-                    ON CONFLICT (symbol, date_trunc('hour', fetched_at))
+                    ON CONFLICT (symbol, date_trunc('hour', fetched_at AT TIME ZONE 'UTC'))
                     DO UPDATE SET
                         price = EXCLUDED.price,
                         price_change_pct = EXCLUDED.price_change_pct,
@@ -174,6 +243,16 @@ def fetch_market_data(symbol: str):
                         is_stale = false
                 """), cache_data)
                 logger.info(f"Market data cached for {symbol}: ${cache_data['price']}")
+
+            # Fetch OHLCV price history (6 months) for charts
+            try:
+                if asset_type == "crypto":
+                    _fetch_crypto_history(session, sa_text, httpx, symbol, cg_id)
+                else:
+                    _fetch_equity_history(session, sa_text, symbol)
+            except Exception as hist_err:
+                logger.warning(f"Failed to fetch price history for {symbol}: {hist_err}")
+
         except Exception as e:
             logger.warning(f"Failed to fetch market data for {symbol}: {e}")
 

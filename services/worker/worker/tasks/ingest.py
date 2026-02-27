@@ -36,6 +36,41 @@ _dedup_redis = redis_lib.from_url(
 )
 
 
+def _track_skipped_article(topic_id: str, user_id: str):
+    """Decrement expected count and check if processing is effectively complete.
+
+    Called when an article is deduplicated or fails to fetch — no fan-out tasks
+    will be created, so `expected` must shrink to match. Without this, the
+    clustering trigger (embedded >= expected * 0.8) never fires when most
+    articles are duplicates, leaving the pipeline permanently stuck at
+    "processing".
+    """
+    try:
+        proc_prefix = f"ttwatch:processing:{topic_id}"
+        new_expected = _cache_redis.decr(f"{proc_prefix}:expected")
+        _cache_redis.expire(f"{proc_prefix}:expected", 7200)
+
+        if new_expected <= 0:
+            # All articles were skipped — mark complete directly
+            _cache_redis.set(f"{proc_prefix}:phase", "complete", ex=7200)
+            return
+
+        # Check if embedded count now meets threshold for clustering
+        embedded_raw = _cache_redis.get(f"{proc_prefix}:embedded")
+        embedded = int(embedded_raw) if embedded_raw else 0
+        if embedded >= new_expected * 0.8:
+            lock_key = f"{proc_prefix}:cluster_dispatched"
+            if _cache_redis.set(lock_key, "1", nx=True, ex=7200):
+                app.send_task("recluster_topic", args=[user_id, topic_id])
+                _cache_redis.set(f"{proc_prefix}:phase", "clustering", ex=7200)
+                logger.info(
+                    f"Auto-dispatched recluster_topic for topic {topic_id} "
+                    f"(expected shrunk to {new_expected}, embedded={embedded})"
+                )
+    except Exception as e:
+        logger.warning(f"Failed to track skipped article for topic {topic_id}: {e}")
+
+
 @app.task(name="ingest_article", bind=True, max_retries=2)
 @with_rls_context
 def ingest_article(self, user_id: str, topic_id: str, url: str,
@@ -60,6 +95,7 @@ def ingest_article(self, user_id: str, topic_id: str, url: str,
             _cache_redis.expire(ing_key, 7200)
         except Exception:
             pass
+        _track_skipped_article(topic_id, user_id)
         return {"status": "duplicate", "layer": "url"}
 
     # --- Fetch and extract with trafilatura ---
@@ -73,6 +109,7 @@ def ingest_article(self, user_id: str, topic_id: str, url: str,
                 _cache_redis.expire(ing_key, 7200)
             except Exception:
                 pass
+            _track_skipped_article(topic_id, user_id)
             return {"status": "fetch_failed"}
 
         extracted = trafilatura.extract(
@@ -90,6 +127,7 @@ def ingest_article(self, user_id: str, topic_id: str, url: str,
                 _cache_redis.expire(ing_key, 7200)
             except Exception:
                 pass
+            _track_skipped_article(topic_id, user_id)
             return {"status": "extraction_failed"}
     except Exception as e:
         logger.error(f"Extraction error for {url}: {e}")
@@ -136,6 +174,7 @@ def ingest_article(self, user_id: str, topic_id: str, url: str,
             _cache_redis.expire(ing_key, 7200)
         except Exception:
             pass
+        _track_skipped_article(topic_id, user_id)
         return {"status": "duplicate", "layer": "content_hash"}
 
     # --- Store raw content in MinIO ---
