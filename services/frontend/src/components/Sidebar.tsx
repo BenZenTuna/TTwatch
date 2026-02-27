@@ -113,7 +113,7 @@ export function Sidebar({ wsConnected, lastWsMessage }: SidebarProps) {
   ];
 
   return (
-    <aside className="w-64 h-screen bg-surface-raised border-r border-surface-border flex flex-col fixed left-0 top-0">
+    <aside className="w-64 h-screen bg-surface-raised border-r border-surface-border flex flex-col fixed left-0 top-0 overflow-hidden">
       {/* Logo */}
       <div className="flex items-center gap-2.5 px-5 h-14 border-b border-surface-border shrink-0">
         <Shield className="w-5 h-5 text-accent" />
@@ -121,7 +121,7 @@ export function Sidebar({ wsConnected, lastWsMessage }: SidebarProps) {
       </div>
 
       {/* Nav links */}
-      <nav className="flex-1 overflow-y-auto px-3 py-4 space-y-1">
+      <nav className="flex-1 min-w-0 overflow-y-auto overflow-x-hidden px-3 py-4 space-y-1">
         {navItems.map((item) => {
           const active =
             item.href === "/dashboard"
@@ -144,7 +144,7 @@ export function Sidebar({ wsConnected, lastWsMessage }: SidebarProps) {
         })}
 
         {/* Topics section */}
-        <div className="pt-4 mt-4 border-t border-surface-border">
+        <div className="pt-4 mt-4 border-t border-surface-border overflow-hidden min-w-0">
           <div className="flex items-center justify-between px-3 mb-2">
             <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider">
               Topics
@@ -161,20 +161,20 @@ export function Sidebar({ wsConnected, lastWsMessage }: SidebarProps) {
             <p className="px-3 text-xs text-gray-600">No topics yet</p>
           ) : (
             topics.map((topic) => (
-              <div key={topic.id} className="flex items-center group">
+              <div key={topic.id} className="flex items-center group min-w-0 overflow-hidden">
                 <button
                   onClick={() => {
                     selectTopic(topic.id);
                     router.push(`/dashboard/topics/${topic.id}`);
                   }}
-                  className={`flex-1 flex items-center gap-2 px-3 py-1.5 rounded-md text-sm transition-colors ${
+                  className={`flex-1 min-w-0 overflow-hidden flex items-center gap-2 px-3 py-1.5 rounded-md text-sm transition-colors ${
                     selectedTopicId === topic.id
                       ? "bg-accent/10 text-accent"
                       : "text-gray-400 hover:text-gray-200 hover:bg-surface-overlay"
                   }`}
                 >
                   <span className="text-base">{topic.icon || "\u2022"}</span>
-                  <span className="truncate">{topic.name}</span>
+                  <span className="truncate block">{topic.name}</span>
                 </button>
                 <button
                   onClick={(e) => handleTopicSearch(e, topic.id)}

@@ -1,21 +1,22 @@
 services:
+  # Embedder runs on CPU to leave GPU for both vLLM instances.
+  # Qwen3-Embedding-0.6B is tiny (0.6B params) and performs well on CPU.
   embedder:
     build: ./services/embedder
     restart: unless-stopped
-    deploy:
-      resources:
-        reservations:
-          devices: [{capabilities: [gpu]}]
     ports: ["8101:8001"]
     environment:
-      CUDA_VISIBLE_DEVICES: "0"
       MODEL_NAME: "${EMBEDDING_MODEL_NAME:-Qwen/Qwen3-Embedding-0.6B}"
+      EMBEDDER_DEVICE: "cpu"
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:8001/health"]
       interval: 10s
       timeout: 10s
       retries: 5
+      start_period: 60s
 
+  # Primary reasoning model — loads FIRST on empty GPU.
+  # 0.65 * 32607 = ~21 GB budget. Model weights ~16.5 GB, leaves ~4.5 GB for KV cache.
   vllm:
     image: vllm/vllm-openai:${VLLM_VERSION:-v0.16.0}
     restart: unless-stopped
@@ -26,16 +27,14 @@ services:
     volumes: [./models:/models]
     command: >
       --model /models/${LOCAL_MODEL_NAME:-Qwen3-32B-AWQ}
-      --quantization awq
-      --gpu-memory-utilization 0.55
-      --max-model-len 32768
+      --quantization awq_marlin
+      --gpu-memory-utilization 0.65
+      --max-model-len 8192
       --max-num-seqs 8
       --enable-prefix-caching
       --reasoning-parser deepseek_r1
       --port 8000
     ports: ["8100:8000"]
-    depends_on:
-      embedder: { condition: service_healthy }
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:8000/health"]
       interval: 10s
@@ -43,6 +42,8 @@ services:
       retries: 10
       start_period: 120s
 
+  # Fast classification model — loads SECOND after vllm is healthy.
+  # 0.85 util so cache budget = total*0.85 - all_used > 0 despite vllm's allocation.
   vllm-fast:
     image: vllm/vllm-openai:${VLLM_VERSION:-v0.16.0}
     restart: unless-stopped
@@ -53,8 +54,8 @@ services:
     volumes: [./models:/models]
     command: >
       --model /models/${FAST_MODEL_NAME:-Qwen3-8B-AWQ}
-      --quantization awq
-      --gpu-memory-utilization 0.30
+      --quantization awq_marlin
+      --gpu-memory-utilization 0.85
       --max-model-len 8192
       --max-num-seqs 16
       --enable-prefix-caching
@@ -68,7 +69,7 @@ services:
       interval: 15s
       timeout: 10s
       retries: 10
-      start_period: 30s
+      start_period: 120s
 
   # Override dependencies to include GPU services
   api:

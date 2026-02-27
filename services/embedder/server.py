@@ -23,7 +23,8 @@ async def lifespan(app: FastAPI):
 
     model_name = os.environ.get("MODEL_NAME", "Qwen/Qwen3-Embedding-0.6B")
     logger.info(f"Loading embedding model: {model_name}")
-    model = SentenceTransformer(model_name, device="cuda")
+    device = os.environ.get("EMBEDDER_DEVICE", "cuda")
+    model = SentenceTransformer(model_name, device=device)
     logger.info(f"Model loaded. Embedding dimension: {model.get_sentence_embedding_dimension()}")
     yield
     logger.info("Shutting down embedder")
