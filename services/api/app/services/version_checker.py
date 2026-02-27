@@ -80,6 +80,14 @@ TRACKED_SERVICES = [
         source_ref="Qwen/Qwen3-32B-AWQ",
         changelog_url="https://huggingface.co/Qwen/Qwen3-32B-AWQ",
     ),
+    TrackedService(
+        name="Embedding Model",
+        env_var="EMBEDDING_MODEL_NAME",
+        default="Qwen/Qwen3-Embedding-0.6B",
+        source_type="huggingface",
+        source_ref="Qwen/Qwen3-Embedding-0.6B",
+        changelog_url="https://huggingface.co/Qwen/Qwen3-Embedding-0.6B",
+    ),
 ]
 
 

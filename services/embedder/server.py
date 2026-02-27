@@ -1,4 +1,4 @@
-"""BGE-M3 embedding service.
+"""Qwen3-Embedding-0.6B embedding service.
 
 Runs as a standalone FastAPI server on port 8001.
 Always resident in GPU VRAM (~1.2GB for FP16).
@@ -21,7 +21,7 @@ async def lifespan(app: FastAPI):
     global model
     from sentence_transformers import SentenceTransformer
 
-    model_name = os.environ.get("MODEL_NAME", "BAAI/bge-m3")
+    model_name = os.environ.get("MODEL_NAME", "Qwen/Qwen3-Embedding-0.6B")
     logger.info(f"Loading embedding model: {model_name}")
     model = SentenceTransformer(model_name, device="cuda")
     logger.info(f"Model loaded. Embedding dimension: {model.get_sentence_embedding_dimension()}")
@@ -45,7 +45,7 @@ class EmbedResponse(BaseModel):
 async def health():
     if model is None:
         raise HTTPException(503, "Model not loaded")
-    return {"status": "ok", "model": os.environ.get("MODEL_NAME", "BAAI/bge-m3")}
+    return {"status": "ok", "model": os.environ.get("MODEL_NAME", "Qwen/Qwen3-Embedding-0.6B")}
 
 
 @app.post("/embed", response_model=EmbedResponse)

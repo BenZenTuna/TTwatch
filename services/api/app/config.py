@@ -27,7 +27,7 @@ class Settings(BaseSettings):
 
     # Embedder — can point to local Docker service OR remote LAN machine
     EMBEDDER_URL: str = "http://embedder:8001"
-    EMBEDDING_DIMENSION: int = 1024  # BGE-M3 = 1024, OpenAI large = 3072
+    EMBEDDING_DIMENSION: int = 1024  # Qwen3-Embedding-0.6B = 1024, OpenAI large = 3072
 
     # SearXNG — can point to local Docker service OR remote LAN machine
     SEARXNG_URL: str = "http://searxng:8080"
