@@ -149,11 +149,11 @@ def ingest_article(self, user_id: str, topic_id: str, url: str,
     from worker.tasks.relevance import score_relevance
 
     article_id = str(article.id)
-    summarize_article.delay(user_id, article_id)
     embed_article.delay(user_id, article_id)
-    extract_entities.delay(user_id, article_id)
-    classify_sentiment.delay(user_id, article_id)
-    score_relevance.delay(user_id, article_id)
+    summarize_article.delay(user_id, article_id)
+    classify_sentiment.apply_async(args=[user_id, article_id], countdown=3)
+    score_relevance.apply_async(args=[user_id, article_id], countdown=6)
+    extract_entities.apply_async(args=[user_id, article_id], countdown=10)
 
     # Transition phase from "ingesting" to "processing" once fan-out begins
     try:

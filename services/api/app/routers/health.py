@@ -23,6 +23,14 @@ async def service_health(request: Request):
             except Exception:
                 results["vllm"] = False
 
+        if settings.VLLM_FAST_URL:
+            try:
+                base = settings.VLLM_FAST_URL.replace("/v1", "")
+                resp = await client.get(f"{base}/health")
+                results["vllm_fast"] = resp.status_code == 200
+            except Exception:
+                results["vllm_fast"] = False
+
         if settings.EMBEDDER_URL:
             try:
                 resp = await client.get(f"{settings.EMBEDDER_URL}/health")

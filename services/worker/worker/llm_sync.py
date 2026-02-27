@@ -59,15 +59,25 @@ _lan_startup_retry = dict(
 )
 
 
+_COT_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
+
+
+def _strip_cot(text: str) -> str:
+    """Strip <think>...</think> chain-of-thought blocks from LLM output."""
+    return _COT_RE.sub("", text).strip()
+
+
 class SyncLLMClient:
     """Synchronous LLM client that talks to vLLM or cloud providers."""
 
-    def __init__(self):
+    def __init__(self, *, vllm_url: str | None = None, model_name: str | None = None,
+                 extra_body: dict | None = None):
         self.provider = os.environ.get("LLM_PROVIDER", "local")
-        self.vllm_url = os.environ.get("VLLM_URL", "http://vllm:8000/v1")
-        model_name = os.environ.get("LOCAL_MODEL_NAME", "Qwen2.5-32B-Instruct-AWQ")
+        self.vllm_url = vllm_url or os.environ.get("VLLM_URL", "http://vllm:8000/v1")
+        _model_name = model_name or os.environ.get("LOCAL_MODEL_NAME", "Qwen2.5-32B-Instruct-AWQ")
         # vLLM registers models with their full path (e.g. /models/QwQ-32B-AWQ)
-        self.model = f"/models/{model_name}" if self.provider == "local" else model_name
+        self.model = f"/models/{_model_name}" if self.provider == "local" else _model_name
+        self._extra_body = extra_body or {}
         self._verified = False
 
         if self.provider == "cloud":
@@ -131,13 +141,14 @@ class SyncLLMClient:
             }
             resp = self._client.post("/v1/messages", json=body)
             resp.raise_for_status()
-            return resp.json()["content"][0]["text"]
+            text = resp.json()["content"][0]["text"]
         else:
             body = {
                 "model": self.model,
                 "messages": messages,
                 "max_tokens": kwargs.get("max_tokens", 2048),
                 "temperature": kwargs.get("temperature", 0.3),
+                **self._extra_body,
             }
             if "response_format" in kwargs:
                 body["response_format"] = kwargs["response_format"]
@@ -146,7 +157,9 @@ class SyncLLMClient:
             msg = resp.json()["choices"][0]["message"]
             # Reasoning models (QwQ, DeepSeek-R1) may put output in "reasoning"
             # field when using --reasoning-parser; fall back to it if content is null
-            return msg.get("content") or msg.get("reasoning") or ""
+            text = msg.get("content") or msg.get("reasoning") or ""
+
+        return _strip_cot(text)
 
     def generate_json(self, messages: list[dict], **kwargs) -> dict:
         messages = copy.deepcopy(messages)
@@ -238,3 +251,36 @@ class SyncEmbeddingClient:
 
     def close(self):
         self._client.close()
+
+
+import logging as _logging
+
+_logger = _logging.getLogger(__name__)
+
+
+def create_fast_client() -> SyncLLMClient:
+    """Create a fast LLM client for simple classification tasks.
+
+    Connects to vllm-fast (Qwen3-8B-AWQ) with thinking disabled.
+    Falls back to the main model if vllm-fast is unreachable.
+    """
+    provider = os.environ.get("LLM_PROVIDER", "local")
+    if provider != "local":
+        return SyncLLMClient()
+
+    fast_url = os.environ.get("VLLM_FAST_URL", "")
+    if not fast_url:
+        _logger.info("VLLM_FAST_URL not set, fast client falling back to main model")
+        return SyncLLMClient()
+
+    fast_model = os.environ.get("FAST_MODEL_NAME", "Qwen3-8B-AWQ")
+    try:
+        client = SyncLLMClient(
+            vllm_url=fast_url,
+            model_name=fast_model,
+            extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+        )
+        return client
+    except Exception as e:
+        _logger.warning(f"Failed to create fast LLM client: {e}, falling back to main model")
+        return SyncLLMClient()

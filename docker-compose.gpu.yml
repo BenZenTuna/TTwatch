@@ -27,7 +27,7 @@ services:
     command: >
       --model /models/${LOCAL_MODEL_NAME:-Qwen3-32B-AWQ}
       --quantization awq
-      --gpu-memory-utilization 0.85
+      --gpu-memory-utilization 0.55
       --max-model-len 32768
       --max-num-seqs 8
       --enable-prefix-caching
@@ -43,6 +43,33 @@ services:
       retries: 10
       start_period: 120s
 
+  vllm-fast:
+    image: vllm/vllm-openai:${VLLM_VERSION:-v0.16.0}
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices: [{capabilities: [gpu]}]
+    volumes: [./models:/models]
+    command: >
+      --model /models/${FAST_MODEL_NAME:-Qwen3-8B-AWQ}
+      --quantization awq
+      --gpu-memory-utilization 0.30
+      --max-model-len 8192
+      --max-num-seqs 16
+      --enable-prefix-caching
+      --disable-log-requests
+      --port 8000
+    ports: ["8102:8000"]
+    depends_on:
+      vllm: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/health"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+
   # Override dependencies to include GPU services
   api:
     depends_on:
@@ -51,6 +78,7 @@ services:
       redis: { condition: service_healthy }
       minio: { condition: service_healthy }
       vllm: { condition: service_healthy }
+      vllm-fast: { condition: service_healthy }
       embedder: { condition: service_healthy }
 
   worker-io:
@@ -60,6 +88,7 @@ services:
       redis: { condition: service_healthy }
       minio: { condition: service_healthy }
       vllm: { condition: service_healthy }
+      vllm-fast: { condition: service_healthy }
       embedder: { condition: service_healthy }
 
   worker-cpu:
@@ -69,4 +98,5 @@ services:
       redis: { condition: service_healthy }
       minio: { condition: service_healthy }
       vllm: { condition: service_healthy }
+      vllm-fast: { condition: service_healthy }
       embedder: { condition: service_healthy }

@@ -1,34 +1,46 @@
 #!/bin/bash
 # scripts/download-models.sh
-# Download Qwen 2.5 32B AWQ model for vLLM inference
+# Download LLM models for vLLM inference
 set -e
 
 MODEL_DIR="$(cd "$(dirname "$0")/.." && pwd)/models"
-MODEL_NAME="Qwen/Qwen3-32B-AWQ"
-TARGET_DIR="${MODEL_DIR}/Qwen3-32B-AWQ"
-
-if [ -d "$TARGET_DIR" ] && [ "$(ls -A "$TARGET_DIR" 2>/dev/null)" ]; then
-    echo "Model already exists at ${TARGET_DIR}"
-    echo "Delete the directory and re-run to re-download."
-    exit 0
-fi
-
 mkdir -p "$MODEL_DIR"
 
-echo "Downloading ${MODEL_NAME} to ${TARGET_DIR}..."
-echo "This requires ~18GB of disk space and may take a while."
+download_model() {
+    local hf_name="$1"
+    local local_name="$2"
+    local size_hint="$3"
+    local target_dir="${MODEL_DIR}/${local_name}"
 
-if command -v huggingface-cli &> /dev/null; then
-    huggingface-cli download "$MODEL_NAME" --local-dir "$TARGET_DIR"
-elif command -v git &> /dev/null && command -v git-lfs &> /dev/null; then
-    git lfs install
-    git clone "https://huggingface.co/${MODEL_NAME}" "$TARGET_DIR"
-else
-    echo "Error: Neither huggingface-cli nor git-lfs found."
-    echo "Install one of:"
-    echo "  pip install huggingface_hub[cli]"
-    echo "  apt install git-lfs && git lfs install"
-    exit 1
-fi
+    if [ -d "$target_dir" ] && [ "$(ls -A "$target_dir" 2>/dev/null)" ]; then
+        echo "[OK] ${local_name} already exists at ${target_dir}"
+        return 0
+    fi
 
-echo "Download complete: ${TARGET_DIR}"
+    echo "Downloading ${hf_name} to ${target_dir}..."
+    echo "This requires ~${size_hint} of disk space and may take a while."
+
+    if command -v huggingface-cli &> /dev/null; then
+        huggingface-cli download "$hf_name" --local-dir "$target_dir"
+    elif command -v git &> /dev/null && command -v git-lfs &> /dev/null; then
+        git lfs install
+        git clone "https://huggingface.co/${hf_name}" "$target_dir"
+    else
+        echo "Error: Neither huggingface-cli nor git-lfs found."
+        echo "Install one of:"
+        echo "  pip install huggingface_hub[cli]"
+        echo "  apt install git-lfs && git lfs install"
+        exit 1
+    fi
+
+    echo "Download complete: ${target_dir}"
+}
+
+# Main reasoning model (QwQ-32B-AWQ for vllm service)
+download_model "Qwen/Qwen3-32B-AWQ" "Qwen3-32B-AWQ" "18GB"
+
+# Fast classification model (Qwen3-8B-AWQ for vllm-fast service)
+download_model "Qwen/Qwen3-8B-AWQ" "Qwen3-8B-AWQ" "5GB"
+
+echo ""
+echo "All models downloaded successfully."

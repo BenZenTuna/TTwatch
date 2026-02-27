@@ -25,6 +25,10 @@ class Settings(BaseSettings):
     VLLM_URL: str = "http://vllm:8000/v1"
     LOCAL_MODEL_NAME: str = "Qwen2.5-32B-Instruct-AWQ"
 
+    # Fast LLM — lightweight model for classification tasks
+    VLLM_FAST_URL: str = "http://vllm-fast:8000/v1"
+    FAST_MODEL_NAME: str = "Qwen3-8B-AWQ"
+
     # Embedder — can point to local Docker service OR remote LAN machine
     EMBEDDER_URL: str = "http://embedder:8001"
     EMBEDDING_DIMENSION: int = 1024  # Qwen3-Embedding-0.6B = 1024, OpenAI large = 3072

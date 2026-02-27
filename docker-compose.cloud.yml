@@ -2,6 +2,7 @@ services:
   api:
     environment:
       VLLM_URL: ""
+      VLLM_FAST_URL: ""
       LLM_PROVIDER: cloud
       CLOUD_LLM_PROVIDER: ${CLOUD_LLM_PROVIDER:-openai}
       CLOUD_LLM_API_KEY: ${CLOUD_LLM_API_KEY}
@@ -14,6 +15,7 @@ services:
   worker-io:
     environment:
       VLLM_URL: ""
+      VLLM_FAST_URL: ""
       LLM_PROVIDER: cloud
       CLOUD_LLM_PROVIDER: ${CLOUD_LLM_PROVIDER:-openai}
       CLOUD_LLM_API_KEY: ${CLOUD_LLM_API_KEY}
@@ -26,6 +28,7 @@ services:
   worker-cpu:
     environment:
       VLLM_URL: ""
+      VLLM_FAST_URL: ""
       LLM_PROVIDER: cloud
       CLOUD_LLM_PROVIDER: ${CLOUD_LLM_PROVIDER:-openai}
       CLOUD_LLM_API_KEY: ${CLOUD_LLM_API_KEY}
@@ -38,6 +41,7 @@ services:
   scheduler:
     environment:
       VLLM_URL: ""
+      VLLM_FAST_URL: ""
       LLM_PROVIDER: cloud
       CLOUD_LLM_PROVIDER: ${CLOUD_LLM_PROVIDER:-openai}
       CLOUD_LLM_API_KEY: ${CLOUD_LLM_API_KEY}

@@ -7,7 +7,7 @@ from sqlalchemy import select
 
 from worker.celeryconfig import app
 from worker.rls import with_rls_context
-from worker.llm_sync import SyncLLMClient
+from worker.llm_sync import create_fast_client
 from worker.tasks.utils import fetch_article_text
 from app.models import Article
 
@@ -17,7 +17,7 @@ _cache_redis = redis_lib.from_url(
 
 logger = logging.getLogger(__name__)
 
-_llm = SyncLLMClient()
+_llm = create_fast_client()
 
 
 @app.task(name="classify_sentiment", max_retries=3, default_retry_delay=30)
@@ -38,6 +38,7 @@ def classify_sentiment(user_id: str, article_id: str, session=None):
         {"role": "system", "content": (
             "Classify the sentiment of this article on a scale from -1.0 to 1.0. "
             "-1.0 = strongly negative, 0.0 = neutral, 1.0 = strongly positive. "
+            "Respond with only the requested format. Do not include explanations. "
             'Return JSON: {"score": 0.0, "rationale": "brief explanation"}'
         )},
         {"role": "user", "content": f"Title: {article.title}\nText: {raw_text[:2000]}"},
