@@ -33,6 +33,19 @@ export default function ModelsPage() {
     loadData();
   }, []);
 
+  // Poll model status every 30 seconds
+  useEffect(() => {
+    const interval = setInterval(async () => {
+      try {
+        const status = await getModelStatus();
+        setModelStatus(status);
+      } catch {
+        // ignore polling errors
+      }
+    }, 30_000);
+    return () => clearInterval(interval);
+  }, []);
+
   async function loadData() {
     try {
       const [status, taskRouting] = await Promise.all([
