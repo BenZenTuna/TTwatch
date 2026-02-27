@@ -1,8 +1,11 @@
 """Search task — query SearXNG and dispatch article ingestion."""
+import json
 import logging
 import os
+from datetime import datetime, timezone
 
 import httpx
+import redis as redis_lib
 from sqlalchemy import select
 
 from worker.celeryconfig import app
@@ -13,6 +16,11 @@ logger = logging.getLogger(__name__)
 
 _searxng_url = os.environ.get("SEARXNG_URL", "http://searxng:8080")
 _http = httpx.Client(timeout=httpx.Timeout(30.0, connect=10.0))
+
+# Sync Redis for search status tracking + pub/sub (mirrors _alert_redis in price_alerts.py)
+_search_redis = redis_lib.from_url(
+    os.environ.get("REDIS_CACHE_URL", "redis://redis:6379/3")
+)
 
 
 @app.task(name="run_topic_search")
@@ -26,6 +34,8 @@ def run_topic_search(user_id: str, topic_id: str, session=None):
 
     Deduplicates URLs within the batch before dispatching ingest_article.
     """
+    status_key = f"ttwatch:search_status:{topic_id}"
+
     topic = session.execute(
         select(Topic).where(Topic.id == topic_id)
     ).scalar_one_or_none()
@@ -49,58 +59,99 @@ def run_topic_search(user_id: str, topic_id: str, session=None):
         )
         return {"status": "pending_query_generation"}
 
-    # Start with LLM-generated queries
-    queries = list(search_queries)
+    # Set search status to "searching"
+    try:
+        _search_redis.setex(status_key, 600, json.dumps({
+            "status": "searching",
+            "started_at": datetime.now(timezone.utc).isoformat(),
+            "user_id": user_id,
+        }))
+    except Exception as e:
+        logger.warning(f"Failed to set search status: {e}")
 
-    # Also include any user-configured additional search terms
-    search_terms = config.get("search_terms", [])
-    if isinstance(search_terms, list):
-        for term in search_terms:
-            if isinstance(term, str) and term.strip():
-                queries.append(term.strip())
+    try:
+        # Start with LLM-generated queries
+        queries = list(search_queries)
 
-    # Collect all results, deduplicate by URL within this batch
-    seen_urls = set()
-    results = []
+        # Also include any user-configured additional search terms
+        search_terms = config.get("search_terms", [])
+        if isinstance(search_terms, list):
+            for term in search_terms:
+                if isinstance(term, str) and term.strip():
+                    queries.append(term.strip())
 
-    for query in queries:
-        try:
-            resp = _http.get(
-                f"{_searxng_url}/search",
-                params={"q": query, "format": "json"},
-            )
-            resp.raise_for_status()
-            data = resp.json()
-        except Exception as e:
-            logger.error(f"SearXNG search failed for query '{query}': {e}")
-            continue
+        # Collect all results, deduplicate by URL within this batch
+        seen_urls = set()
+        results = []
 
-        for item in data.get("results", []):
-            url = item.get("url", "").strip()
-            if not url or url in seen_urls:
+        for query in queries:
+            try:
+                resp = _http.get(
+                    f"{_searxng_url}/search",
+                    params={"q": query, "format": "json"},
+                )
+                resp.raise_for_status()
+                data = resp.json()
+            except Exception as e:
+                logger.error(f"SearXNG search failed for query '{query}': {e}")
                 continue
-            seen_urls.add(url)
-            results.append({
-                "url": url,
-                "title": item.get("title", ""),
-                "source_name": item.get("engine", ""),
-                "source_url": item.get("parsed_url", [""])[0] if item.get("parsed_url") else "",
+
+            for item in data.get("results", []):
+                url = item.get("url", "").strip()
+                if not url or url in seen_urls:
+                    continue
+                seen_urls.add(url)
+                results.append({
+                    "url": url,
+                    "title": item.get("title", ""),
+                    "source_name": item.get("engine", ""),
+                    "source_url": item.get("parsed_url", [""])[0] if item.get("parsed_url") else "",
+                })
+
+        # Dispatch ingestion for each unique result
+        for r in results:
+            app.send_task("ingest_article", args=[
+                user_id,
+                topic_id,
+                r["url"],
+            ], kwargs={
+                "title": r["title"],
+                "source_name": r["source_name"],
+                "source_url": r["source_url"],
             })
 
-    # Dispatch ingestion for each unique result
-    for r in results:
-        app.send_task("ingest_article", args=[
-            user_id,
-            topic_id,
-            r["url"],
-        ], kwargs={
-            "title": r["title"],
-            "source_name": r["source_name"],
-            "source_url": r["source_url"],
-        })
+        logger.info(
+            f"run_topic_search: dispatched {len(results)} articles "
+            f"for topic '{topic.name}' ({len(queries)} queries)"
+        )
 
-    logger.info(
-        f"run_topic_search: dispatched {len(results)} articles "
-        f"for topic '{topic.name}' ({len(queries)} queries)"
-    )
-    return {"status": "ok", "dispatched": len(results)}
+        # Set search status to "completed" + publish to pub/sub
+        completed_payload = {
+            "status": "completed",
+            "completed_at": datetime.now(timezone.utc).isoformat(),
+            "articles_found": len(results),
+            "user_id": user_id,
+        }
+        try:
+            _search_redis.setex(status_key, 300, json.dumps(completed_payload))
+            _search_redis.publish("ttwatch:search:completed", json.dumps({
+                **completed_payload,
+                "type": "search_completed",
+                "topic_id": topic_id,
+            }))
+        except Exception as e:
+            logger.warning(f"Failed to set search completed status: {e}")
+
+        return {"status": "ok", "dispatched": len(results)}
+
+    except Exception as e:
+        logger.error(f"run_topic_search failed for topic {topic_id}: {e}")
+        try:
+            _search_redis.setex(status_key, 300, json.dumps({
+                "status": "error",
+                "error": str(e),
+                "user_id": user_id,
+            }))
+        except Exception:
+            pass
+        raise

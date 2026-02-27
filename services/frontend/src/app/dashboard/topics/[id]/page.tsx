@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { useParams } from "next/navigation";
 import {
   Layers,
@@ -10,6 +10,8 @@ import {
   Activity,
   RefreshCw,
   Bell,
+  Search,
+  AlertCircle,
 } from "lucide-react";
 import { useAppStore } from "@/lib/store";
 import { useWebSocket } from "@/hooks/useWebSocket";
@@ -19,6 +21,8 @@ import {
   getTopicArticles,
   getEntityGraph,
   getSentimentHistory,
+  triggerTopicSearch,
+  getTopicSearchStatus,
 } from "@/lib/api-client";
 import type {
   ClusterResponse,
@@ -26,6 +30,7 @@ import type {
   ArticleResponse,
   EntityGraphResponse,
   SentimentPointResponse,
+  SearchStatusResponse,
   WSMessage,
 } from "@/lib/types";
 import { BubbleCluster } from "@/components/BubbleCluster";
@@ -66,6 +71,12 @@ export default function TopicPage() {
   const [entityGraph, setEntityGraph] = useState<EntityGraphResponse | null>(null);
   const [sentimentData, setSentimentData] = useState<SentimentPointResponse[]>([]);
 
+  // Search status
+  const [searchStatus, setSearchStatus] = useState<SearchStatusResponse>({ status: "idle" });
+  const [searchError, setSearchError] = useState<string | null>(null);
+  const [completedMessage, setCompletedMessage] = useState<string | null>(null);
+  const completedTimerRef = useRef<ReturnType<typeof setTimeout>>();
+
   // Cluster detail panel
   const [selectedCluster, setSelectedCluster] = useState<ClusterResponse | null>(null);
 
@@ -78,12 +89,24 @@ export default function TopicPage() {
     selectTopic(topicId);
   }, [topicId, selectTopic]);
 
+  // Track whether we need to refresh after search completion (set by WS, consumed by effect)
+  const [searchJustCompleted, setSearchJustCompleted] = useState(false);
+
   // WebSocket: real-time updates
   const handleWsMessage = useCallback((msg: WSMessage) => {
+    if (msg.type === "search_completed" && msg.topic_id === topicId) {
+      const found = msg.articles_found as number;
+      setSearchStatus({ status: "completed", articles_found: found });
+      setCompletedMessage(`Found ${found} article${found !== 1 ? "s" : ""}`);
+      clearTimeout(completedTimerRef.current);
+      completedTimerRef.current = setTimeout(() => setCompletedMessage(null), 5000);
+      setSearchJustCompleted(true);
+      return;
+    }
     if (msg.type !== "connected" && msg.type !== "ping") {
       setPendingWsUpdates((prev) => prev + 1);
     }
-  }, []);
+  }, [topicId]);
 
   useWebSocket({ onMessage: handleWsMessage });
 
@@ -107,6 +130,56 @@ export default function TopicPage() {
   useEffect(() => {
     loadCoreData();
   }, [loadCoreData]);
+
+  // Refresh data when search completes via WebSocket
+  useEffect(() => {
+    if (searchJustCompleted) {
+      setSearchJustCompleted(false);
+      loadCoreData();
+    }
+  }, [searchJustCompleted, loadCoreData]);
+
+  // Poll search status while searching
+  useEffect(() => {
+    getTopicSearchStatus(topicId).then(setSearchStatus).catch(() => {});
+  }, [topicId]);
+
+  useEffect(() => {
+    if (searchStatus.status !== "searching") return;
+    const interval = setInterval(() => {
+      getTopicSearchStatus(topicId).then((s) => {
+        setSearchStatus(s);
+        if (s.status === "completed") {
+          setCompletedMessage(`Found ${s.articles_found ?? 0} article${s.articles_found !== 1 ? "s" : ""}`);
+          clearTimeout(completedTimerRef.current);
+          completedTimerRef.current = setTimeout(() => setCompletedMessage(null), 5000);
+          loadCoreData();
+        }
+      }).catch(() => {});
+    }, 5000);
+    return () => clearInterval(interval);
+  }, [searchStatus.status, topicId, loadCoreData]);
+
+  // Cleanup completed message timer
+  useEffect(() => {
+    return () => clearTimeout(completedTimerRef.current);
+  }, []);
+
+  // Handle search trigger
+  const handleSearchNow = useCallback(async () => {
+    setSearchError(null);
+    try {
+      await triggerTopicSearch(topicId);
+      setSearchStatus({ status: "searching", started_at: new Date().toISOString() });
+    } catch (err: unknown) {
+      const error = err as { response?: { status?: number; data?: { detail?: string } } };
+      if (error.response?.status === 429) {
+        setSearchError(error.response.data?.detail || "Please wait before searching again.");
+      } else {
+        setSearchError("Failed to trigger search.");
+      }
+    }
+  }, [topicId]);
 
   // Load tab-specific data lazily
   useEffect(() => {
@@ -198,17 +271,53 @@ export default function TopicPage() {
           )}
         </div>
 
-        {pendingWsUpdates > 0 && (
+        <div className="flex items-center gap-2">
+          {pendingWsUpdates > 0 && (
+            <button
+              onClick={handleRefresh}
+              className="flex items-center gap-2 bg-accent/10 text-accent px-3 py-1.5 rounded-full text-sm hover:bg-accent/20 transition-colors"
+            >
+              <Bell className="w-3.5 h-3.5" />
+              {pendingWsUpdates} update{pendingWsUpdates !== 1 ? "s" : ""}
+              <RefreshCw className="w-3 h-3" />
+            </button>
+          )}
+
           <button
-            onClick={handleRefresh}
-            className="flex items-center gap-2 bg-accent/10 text-accent px-3 py-1.5 rounded-full text-sm hover:bg-accent/20 transition-colors"
+            onClick={handleSearchNow}
+            disabled={searchStatus.status === "searching"}
+            className="flex items-center gap-2 bg-surface-raised border border-surface-border text-gray-300 px-3 py-1.5 rounded-lg text-sm hover:bg-surface-overlay transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            <Bell className="w-3.5 h-3.5" />
-            {pendingWsUpdates} update{pendingWsUpdates !== 1 ? "s" : ""}
-            <RefreshCw className="w-3 h-3" />
+            <Search className={`w-3.5 h-3.5 ${searchStatus.status === "searching" ? "animate-spin" : ""}`} />
+            {searchStatus.status === "searching" ? "Searching..." : "Search Now"}
           </button>
-        )}
+        </div>
       </div>
+
+      {/* Search status indicator */}
+      {searchStatus.status === "searching" && (
+        <div className="flex items-center gap-2 text-sm text-accent bg-accent/5 border border-accent/20 rounded-lg px-4 py-2">
+          <div className="w-2 h-2 bg-accent rounded-full animate-pulse" />
+          Searching for articles...
+        </div>
+      )}
+      {completedMessage && (
+        <div className="flex items-center gap-2 text-sm text-emerald-400 bg-emerald-400/5 border border-emerald-400/20 rounded-lg px-4 py-2">
+          {completedMessage}
+        </div>
+      )}
+      {searchStatus.status === "error" && (
+        <div className="flex items-center gap-2 text-sm text-red-400 bg-red-400/5 border border-red-400/20 rounded-lg px-4 py-2">
+          <AlertCircle className="w-3.5 h-3.5" />
+          Search failed: {searchStatus.error || "Unknown error"}
+        </div>
+      )}
+      {searchError && (
+        <div className="flex items-center gap-2 text-sm text-amber-400 bg-amber-400/5 border border-amber-400/20 rounded-lg px-4 py-2">
+          <AlertCircle className="w-3.5 h-3.5" />
+          {searchError}
+        </div>
+      )}
 
       {/* Tab bar */}
       <div className="flex bg-surface-raised border border-surface-border rounded-lg p-1">

@@ -1,11 +1,15 @@
 """CRUD operations for intelligence topics."""
+import json
 import uuid
 import logging
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import JSONResponse
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.deps import get_current_user, get_db
+from app.deps import get_current_user, get_db, cache_redis
 from app.models import User, Topic, Article, Cluster
 from app.schemas.topics import TopicCreate, TopicUpdate, TopicResponse, ClusterResponse
 
@@ -55,6 +59,16 @@ async def create_topic(
     celery_app.send_task(
         "generate_search_queries",
         args=[str(user.id), str(topic.id)],
+    )
+
+    # Set initial search status so frontend shows "Searching..." immediately
+    await cache_redis.setex(
+        f"ttwatch:search_status:{topic.id}", 600,
+        json.dumps({
+            "status": "searching",
+            "started_at": datetime.now(timezone.utc).isoformat(),
+            "user_id": str(user.id),
+        })
     )
 
     return topic
@@ -121,6 +135,66 @@ async def delete_topic(
     if not topic:
         raise HTTPException(404, "Topic not found")
     await db.delete(topic)
+
+
+@router.post("/topics/{topic_id}/search", status_code=202)
+async def trigger_topic_search(
+    topic_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Manually trigger a new search for a topic. Rate-limited to once per 5 minutes."""
+    topic = await db.execute(
+        select(Topic).where(Topic.id == topic_id, Topic.user_id == user.id)
+    )
+    topic = topic.scalar_one_or_none()
+    if not topic:
+        raise HTTPException(404, "Topic not found")
+
+    lock_key = f"ttwatch:search_lock:{topic_id}"
+    if await cache_redis.exists(lock_key):
+        return JSONResponse(
+            status_code=429,
+            content={"detail": "Search recently triggered. Please wait 5 minutes between searches."},
+        )
+
+    await cache_redis.setex(lock_key, 300, "1")
+
+    # Set search status immediately
+    await cache_redis.setex(
+        f"ttwatch:search_status:{topic_id}", 600,
+        json.dumps({
+            "status": "searching",
+            "started_at": datetime.now(timezone.utc).isoformat(),
+            "user_id": str(user.id),
+        })
+    )
+
+    from app.celery_client import celery_app
+    celery_app.send_task(
+        "run_topic_search",
+        args=[str(user.id), str(topic_id)],
+    )
+
+    return {"status": "search_dispatched", "topic_id": str(topic_id)}
+
+
+@router.get("/topics/{topic_id}/search-status")
+async def get_topic_search_status(
+    topic_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+):
+    """Get the current search status for a topic."""
+    raw = await cache_redis.get(f"ttwatch:search_status:{topic_id}")
+    if not raw:
+        return {"status": "idle"}
+
+    data = json.loads(raw)
+    # Cross-tenant check
+    if data.get("user_id") != str(user.id):
+        return {"status": "idle"}
+
+    return data
 
 
 @router.get("/topics/{topic_id}/clusters", response_model=list[ClusterResponse])

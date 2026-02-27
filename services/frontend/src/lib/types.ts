@@ -241,6 +241,15 @@ export interface SearchResult {
   score: number;
 }
 
+// Search status
+export interface SearchStatusResponse {
+  status: "idle" | "searching" | "completed" | "error";
+  started_at?: string;
+  completed_at?: string;
+  articles_found?: number;
+  error?: string;
+}
+
 // WebSocket message types
 export interface WSMessage {
   type: string;
@@ -259,4 +268,11 @@ export interface WSPingMessage extends WSMessage {
 export interface WSAlertMessage extends WSMessage {
   type: "alert";
   user_id: string;
+}
+
+export interface WSSearchCompletedMessage extends WSMessage {
+  type: "search_completed";
+  topic_id: string;
+  articles_found: number;
+  completed_at: string;
 }

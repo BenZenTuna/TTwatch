@@ -27,12 +27,12 @@ export default function DashboardLayout({
     }
   }
 
-  const { connected } = useWebSocket({ onMessage: handleWsMessage });
+  const { connected, lastMessage } = useWebSocket({ onMessage: handleWsMessage });
 
   return (
     <AuthGuard>
       <div className="flex min-h-screen">
-        <Sidebar wsConnected={connected} />
+        <Sidebar wsConnected={connected} lastWsMessage={lastMessage} />
         <main className="flex-1 ml-64 p-6">{children}</main>
       </div>
     </AuthGuard>

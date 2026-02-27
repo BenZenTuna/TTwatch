@@ -13,20 +13,24 @@ import {
   Wifi,
   WifiOff,
   Shield,
+  RefreshCw,
 } from "lucide-react";
 import { useAppStore } from "@/lib/store";
-import { getTopics, logout, getVersionStatus } from "@/lib/api-client";
+import { getTopics, logout, getVersionStatus, triggerTopicSearch } from "@/lib/api-client";
+import type { WSMessage } from "@/lib/types";
 
 interface SidebarProps {
   wsConnected: boolean;
+  lastWsMessage?: WSMessage | null;
 }
 
-export function Sidebar({ wsConnected }: SidebarProps) {
+export function Sidebar({ wsConnected, lastWsMessage }: SidebarProps) {
   const router = useRouter();
   const pathname = usePathname();
   const { topics, setTopics, selectedTopicId, selectTopic, user } =
     useAppStore();
   const [hasUpdates, setHasUpdates] = useState(false);
+  const [searchingTopics, setSearchingTopics] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     getTopics()
@@ -44,6 +48,35 @@ export function Sidebar({ wsConnected }: SidebarProps) {
       })
       .catch(() => {});
   }, [user?.is_admin]);
+
+  // Listen for search completion via WS to clear spinning state
+  useEffect(() => {
+    if (lastWsMessage?.type === "search_completed" && lastWsMessage.topic_id) {
+      const tid = lastWsMessage.topic_id as string;
+      setSearchingTopics((prev) => {
+        const next = new Set(prev);
+        next.delete(tid);
+        return next;
+      });
+    }
+  }, [lastWsMessage]);
+
+  async function handleTopicSearch(e: React.MouseEvent, topicId: string) {
+    e.stopPropagation();
+    setSearchingTopics((prev) => new Set(prev).add(topicId));
+    try {
+      await triggerTopicSearch(topicId);
+    } catch {
+      // On error (including 429), stop spinning after a short delay
+      setTimeout(() => {
+        setSearchingTopics((prev) => {
+          const next = new Set(prev);
+          next.delete(topicId);
+          return next;
+        });
+      }, 1000);
+    }
+  }
 
   async function handleLogout() {
     await logout();
@@ -106,21 +139,30 @@ export function Sidebar({ wsConnected }: SidebarProps) {
             <p className="px-3 text-xs text-gray-600">No topics yet</p>
           ) : (
             topics.map((topic) => (
-              <button
-                key={topic.id}
-                onClick={() => {
-                  selectTopic(topic.id);
-                  router.push(`/dashboard/topics/${topic.id}`);
-                }}
-                className={`w-full flex items-center gap-2 px-3 py-1.5 rounded-md text-sm transition-colors ${
-                  selectedTopicId === topic.id
-                    ? "bg-accent/10 text-accent"
-                    : "text-gray-400 hover:text-gray-200 hover:bg-surface-overlay"
-                }`}
-              >
-                <span className="text-base">{topic.icon || "\u2022"}</span>
-                <span className="truncate">{topic.name}</span>
-              </button>
+              <div key={topic.id} className="flex items-center group">
+                <button
+                  onClick={() => {
+                    selectTopic(topic.id);
+                    router.push(`/dashboard/topics/${topic.id}`);
+                  }}
+                  className={`flex-1 flex items-center gap-2 px-3 py-1.5 rounded-md text-sm transition-colors ${
+                    selectedTopicId === topic.id
+                      ? "bg-accent/10 text-accent"
+                      : "text-gray-400 hover:text-gray-200 hover:bg-surface-overlay"
+                  }`}
+                >
+                  <span className="text-base">{topic.icon || "\u2022"}</span>
+                  <span className="truncate">{topic.name}</span>
+                </button>
+                <button
+                  onClick={(e) => handleTopicSearch(e, topic.id)}
+                  disabled={searchingTopics.has(topic.id)}
+                  className="opacity-0 group-hover:opacity-100 p-1 text-gray-500 hover:text-gray-300 transition-all disabled:opacity-100"
+                  title="Search now"
+                >
+                  <RefreshCw className={`w-3 h-3 ${searchingTopics.has(topic.id) ? "animate-spin text-accent" : ""}`} />
+                </button>
+              </div>
             ))
           )}
         </div>

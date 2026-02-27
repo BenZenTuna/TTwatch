@@ -29,6 +29,7 @@ import type {
   PriceHistoryResponse,
   AssetMappingResponse,
   SearchResult,
+  SearchStatusResponse,
 } from "./types";
 
 // SSR-safe base URL: Docker-internal on server, public on client
@@ -164,6 +165,16 @@ export async function createTopic(
 
 export async function deleteTopic(topicId: string): Promise<void> {
   await api.delete(`/api/topics/${topicId}`);
+}
+
+export async function triggerTopicSearch(topicId: string) {
+  const { data } = await api.post(`/api/topics/${topicId}/search`);
+  return data;
+}
+
+export async function getTopicSearchStatus(topicId: string): Promise<SearchStatusResponse> {
+  const { data } = await api.get<SearchStatusResponse>(`/api/topics/${topicId}/search-status`);
+  return data;
 }
 
 // ── Clusters ──

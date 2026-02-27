@@ -72,6 +72,34 @@ async def ws_alert_listener():
         await alert_redis.close()
 
 
+# === Redis pub/sub listener for search completion notifications ===
+
+async def ws_search_listener():
+    """Background task: subscribe to Redis pub/sub for search completions
+    and forward them to the appropriate user's WebSocket connections.
+
+    Workers publish to 'ttwatch:search:completed' (synchronous Redis).
+    This coroutine subscribes asynchronously and bridges to ws_manager.
+    Started during API lifespan; cancelled on shutdown.
+    """
+    search_redis = aioredis.from_url(settings.REDIS_CACHE_URL)
+    pubsub = search_redis.pubsub()
+    await pubsub.subscribe("ttwatch:search:completed")
+    try:
+        async for message in pubsub.listen():
+            if message["type"] == "message":
+                try:
+                    data = json.loads(message["data"])
+                    user_id = data.pop("user_id", None)
+                    if user_id:
+                        await ws_manager.notify_user(user_id, data)
+                except (json.JSONDecodeError, KeyError):
+                    pass
+    finally:
+        await pubsub.unsubscribe("ttwatch:search:completed")
+        await search_redis.close()
+
+
 # === FastAPI Lifespan ===
 
 @asynccontextmanager
@@ -81,17 +109,20 @@ async def lifespan(app: FastAPI):
     app.state.llm = get_llm_provider()
     app.state.embedder = get_embedding_provider()
 
-    # Start background Redis pub/sub listener for price alert notifications
+    # Start background Redis pub/sub listeners
     alert_task = asyncio.create_task(ws_alert_listener())
+    search_task = asyncio.create_task(ws_search_listener())
 
     yield
 
     # Shutdown: cancel background tasks and close persistent clients
     alert_task.cancel()
-    try:
-        await alert_task
-    except asyncio.CancelledError:
-        pass
+    search_task.cancel()
+    for task in (alert_task, search_task):
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
     await app.state.llm.close()
     await app.state.embedder.close()
 
