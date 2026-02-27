@@ -296,10 +296,15 @@ export interface ProcessingStatusResponse {
 
 // Search status
 export interface SearchStatusResponse {
-  status: "idle" | "searching" | "completed" | "error";
+  status: "idle" | "generating_queries" | "searching" | "processing" | "completed" | "error";
   started_at?: string;
   completed_at?: string;
   articles_found?: number;
+  queries_total?: number;
+  queries_completed?: number;
+  articles_ingested?: number;
+  tasks_completed?: number;
+  tasks_total_estimate?: number;
   error?: string;
 }
 

@@ -59,13 +59,25 @@ def run_topic_search(user_id: str, topic_id: str, session=None):
         )
         return {"status": "pending_query_generation"}
 
+    # Preserve started_at from earlier phases (generating_queries)
+    started_at = datetime.now(timezone.utc).isoformat()
+    try:
+        prev_started = _search_redis.get(f"ttwatch:search_progress:{topic_id}:started_at")
+        if prev_started:
+            started_at = prev_started.decode()
+    except Exception:
+        pass
+
     # Set search status to "searching"
     try:
-        _search_redis.setex(status_key, 600, json.dumps({
+        _search_redis.setex(status_key, 3600, json.dumps({
             "status": "searching",
-            "started_at": datetime.now(timezone.utc).isoformat(),
+            "started_at": started_at,
             "user_id": user_id,
         }))
+        _search_redis.setex(
+            f"ttwatch:search_progress:{topic_id}:started_at", 7200, started_at
+        )
     except Exception as e:
         logger.warning(f"Failed to set search status: {e}")
 
@@ -79,6 +91,14 @@ def run_topic_search(user_id: str, topic_id: str, session=None):
             for term in search_terms:
                 if isinstance(term, str) and term.strip():
                     queries.append(term.strip())
+
+        # Set query counters for progress tracking
+        progress_prefix = f"ttwatch:search_progress:{topic_id}"
+        try:
+            _search_redis.set(f"{progress_prefix}:queries_total", len(queries), ex=7200)
+            _search_redis.set(f"{progress_prefix}:queries_completed", 0, ex=7200)
+        except Exception:
+            pass
 
         # Collect all results, deduplicate by URL within this batch
         seen_urls = set()
@@ -94,7 +114,17 @@ def run_topic_search(user_id: str, topic_id: str, session=None):
                 data = resp.json()
             except Exception as e:
                 logger.error(f"SearXNG search failed for query '{query}': {e}")
+                try:
+                    _search_redis.incr(f"{progress_prefix}:queries_completed")
+                except Exception:
+                    pass
                 continue
+
+            # Track per-query progress
+            try:
+                _search_redis.incr(f"{progress_prefix}:queries_completed")
+            except Exception:
+                pass
 
             for item in data.get("results", []):
                 url = item.get("url", "").strip()
@@ -125,12 +155,15 @@ def run_topic_search(user_id: str, topic_id: str, session=None):
         if dispatched_count > 0:
             try:
                 proc_prefix = f"ttwatch:processing:{topic_id}"
-                _search_redis.set(f"{proc_prefix}:expected", dispatched_count, ex=3600)
-                _search_redis.set(f"{proc_prefix}:phase", "ingesting", ex=3600)
+                _search_redis.set(f"{proc_prefix}:expected", dispatched_count, ex=7200)
+                _search_redis.set(f"{proc_prefix}:phase", "ingesting", ex=7200)
                 # Reset counters for new batch
-                for counter in ("embedded", "summarized", "sentiment", "relevance"):
+                for counter in ("embedded", "summarized", "sentiment", "relevance", "entities"):
                     _search_redis.delete(f"{proc_prefix}:{counter}")
                 _search_redis.delete(f"{proc_prefix}:cluster_dispatched")
+                # Reset aggregate progress counters
+                _search_redis.set(f"{progress_prefix}:ingested", 0, ex=7200)
+                _search_redis.set(f"{progress_prefix}:tasks_completed", 0, ex=7200)
             except Exception as e:
                 logger.warning(f"Failed to set processing counters: {e}")
 
@@ -139,29 +172,48 @@ def run_topic_search(user_id: str, topic_id: str, session=None):
             f"for topic '{topic.name}' ({len(queries)} queries)"
         )
 
-        # Set search status to "completed" + publish to pub/sub
-        completed_payload = {
-            "status": "completed",
-            "completed_at": datetime.now(timezone.utc).isoformat(),
-            "articles_found": len(results),
-            "user_id": user_id,
-        }
-        try:
-            _search_redis.setex(status_key, 300, json.dumps(completed_payload))
-            _search_redis.publish("ttwatch:search:completed", json.dumps({
-                **completed_payload,
-                "type": "search_completed",
-                "topic_id": topic_id,
-            }))
-        except Exception as e:
-            logger.warning(f"Failed to set search completed status: {e}")
+        if dispatched_count == 0:
+            # No articles found — mark as completed immediately
+            completed_payload = {
+                "status": "completed",
+                "completed_at": datetime.now(timezone.utc).isoformat(),
+                "articles_found": 0,
+                "started_at": started_at,
+                "user_id": user_id,
+            }
+            try:
+                _search_redis.setex(status_key, 3600, json.dumps(completed_payload))
+                _search_redis.publish("ttwatch:search:completed", json.dumps({
+                    **completed_payload,
+                    "type": "search_completed",
+                    "topic_id": topic_id,
+                }))
+            except Exception as e:
+                logger.warning(f"Failed to set search completed status: {e}")
+        else:
+            # Transition to "processing" — NOT "completed" (processing hasn't started yet)
+            processing_payload = {
+                "status": "processing",
+                "started_at": started_at,
+                "articles_found": dispatched_count,
+                "user_id": user_id,
+            }
+            try:
+                _search_redis.setex(status_key, 3600, json.dumps(processing_payload))
+                _search_redis.publish("ttwatch:search:progress", json.dumps({
+                    **processing_payload,
+                    "type": "search_progress",
+                    "topic_id": topic_id,
+                }))
+            except Exception as e:
+                logger.warning(f"Failed to set processing status: {e}")
 
         return {"status": "ok", "dispatched": len(results)}
 
     except Exception as e:
         logger.error(f"run_topic_search failed for topic {topic_id}: {e}")
         try:
-            _search_redis.setex(status_key, 300, json.dumps({
+            _search_redis.setex(status_key, 3600, json.dumps({
                 "status": "error",
                 "error": str(e),
                 "user_id": user_id,

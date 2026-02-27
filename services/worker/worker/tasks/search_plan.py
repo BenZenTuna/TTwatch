@@ -1,12 +1,20 @@
 """Generate optimized search queries from natural-language topic names using LLM."""
+import json
 import logging
+import os
+from datetime import datetime, timezone
 
+import redis as redis_lib
 from sqlalchemy import select
 
 from worker.celeryconfig import app
 from worker.rls import with_rls_context
 from worker.llm_router import get_llm_for_task
 from app.models import Topic
+
+_search_redis = redis_lib.from_url(
+    os.environ.get("REDIS_CACHE_URL", "redis://redis:6379/3")
+)
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +51,21 @@ def generate_search_queries(user_id: str, topic_id: str, session=None):
     if not topic:
         logger.warning(f"Topic {topic_id} not found for user {user_id}")
         return {"status": "topic_not_found"}
+
+    # Set status to generating_queries
+    now = datetime.now(timezone.utc).isoformat()
+    try:
+        status_key = f"ttwatch:search_status:{topic_id}"
+        _search_redis.setex(status_key, 3600, json.dumps({
+            "status": "generating_queries",
+            "started_at": now,
+            "user_id": user_id,
+        }))
+        _search_redis.setex(
+            f"ttwatch:search_progress:{topic_id}:started_at", 7200, now
+        )
+    except Exception as e:
+        logger.warning(f"Failed to set generating_queries status: {e}")
 
     llm = get_llm_for_task(session, user_id, TASK_CATEGORY)
     result = llm.generate_json([

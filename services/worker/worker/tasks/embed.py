@@ -95,13 +95,16 @@ def embed_article(user_id: str, article_id: str, session=None):
     try:
         proc_prefix = f"ttwatch:processing:{topic_id}"
         current = _cache_redis.incr(f"{proc_prefix}:embedded")
-        _cache_redis.expire(f"{proc_prefix}:embedded", 3600)
+        _cache_redis.expire(f"{proc_prefix}:embedded", 7200)
+        agg_key = f"ttwatch:search_progress:{topic_id}:tasks_completed"
+        _cache_redis.incr(agg_key)
+        _cache_redis.expire(agg_key, 7200)
         expected_raw = _cache_redis.get(f"{proc_prefix}:expected")
         if expected_raw and current >= int(expected_raw) * 0.8:
             lock_key = f"{proc_prefix}:cluster_dispatched"
-            if _cache_redis.set(lock_key, "1", nx=True, ex=3600):
+            if _cache_redis.set(lock_key, "1", nx=True, ex=7200):
                 app.send_task("recluster_topic", args=[user_id, topic_id])
-                _cache_redis.set(f"{proc_prefix}:phase", "clustering", ex=3600)
+                _cache_redis.set(f"{proc_prefix}:phase", "clustering", ex=7200)
                 logger.info(f"Auto-dispatched recluster_topic for topic {topic_id} ({current} embedded)")
     except Exception as e:
         logger.warning(f"Failed to update embedding progress: {e}")

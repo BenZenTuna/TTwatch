@@ -54,6 +54,12 @@ def ingest_article(self, user_id: str, topic_id: str, url: str,
     dedup_key = f"ttwatch:dedup:urls:{user_id}"
     if _dedup_redis.sismember(dedup_key, url):
         logger.debug(f"URL already ingested for user {user_id}: {url}")
+        try:
+            ing_key = f"ttwatch:search_progress:{topic_id}:ingested"
+            _cache_redis.incr(ing_key)
+            _cache_redis.expire(ing_key, 7200)
+        except Exception:
+            pass
         return {"status": "duplicate", "layer": "url"}
 
     # --- Fetch and extract with trafilatura ---
@@ -61,6 +67,12 @@ def ingest_article(self, user_id: str, topic_id: str, url: str,
         downloaded = trafilatura.fetch_url(url)
         if not downloaded:
             logger.warning(f"Failed to fetch: {url}")
+            try:
+                ing_key = f"ttwatch:search_progress:{topic_id}:ingested"
+                _cache_redis.incr(ing_key)
+                _cache_redis.expire(ing_key, 7200)
+            except Exception:
+                pass
             return {"status": "fetch_failed"}
 
         extracted = trafilatura.extract(
@@ -72,6 +84,12 @@ def ingest_article(self, user_id: str, topic_id: str, url: str,
         )
         if not extracted or len(extracted.strip()) < 100:
             logger.warning(f"Insufficient content extracted from: {url}")
+            try:
+                ing_key = f"ttwatch:search_progress:{topic_id}:ingested"
+                _cache_redis.incr(ing_key)
+                _cache_redis.expire(ing_key, 7200)
+            except Exception:
+                pass
             return {"status": "extraction_failed"}
     except Exception as e:
         logger.error(f"Extraction error for {url}: {e}")
@@ -112,6 +130,12 @@ def ingest_article(self, user_id: str, topic_id: str, url: str,
     if existing:
         _dedup_redis.sadd(dedup_key, url)
         logger.debug(f"Content hash duplicate: {url}")
+        try:
+            ing_key = f"ttwatch:search_progress:{topic_id}:ingested"
+            _cache_redis.incr(ing_key)
+            _cache_redis.expire(ing_key, 7200)
+        except Exception:
+            pass
         return {"status": "duplicate", "layer": "content_hash"}
 
     # --- Store raw content in MinIO ---
@@ -155,12 +179,20 @@ def ingest_article(self, user_id: str, topic_id: str, url: str,
     score_relevance.apply_async(args=[user_id, article_id], countdown=6)
     extract_entities.apply_async(args=[user_id, article_id], countdown=10)
 
+    # Track ingestion progress
+    try:
+        ing_key = f"ttwatch:search_progress:{topic_id}:ingested"
+        _cache_redis.incr(ing_key)
+        _cache_redis.expire(ing_key, 7200)
+    except Exception:
+        pass
+
     # Transition phase from "ingesting" to "processing" once fan-out begins
     try:
         proc_prefix = f"ttwatch:processing:{topic_id}"
         current_phase = _cache_redis.get(f"{proc_prefix}:phase")
         if current_phase and current_phase.decode() == "ingesting":
-            _cache_redis.set(f"{proc_prefix}:phase", "processing", ex=3600)
+            _cache_redis.set(f"{proc_prefix}:phase", "processing", ex=7200)
     except Exception:
         pass
 

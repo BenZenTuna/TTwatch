@@ -90,6 +90,9 @@ def score_relevance(user_id: str, article_id: str, session=None):
     try:
         key = f"ttwatch:processing:{article.topic_id}:relevance"
         _cache_redis.incr(key)
-        _cache_redis.expire(key, 3600)
+        _cache_redis.expire(key, 7200)
+        agg_key = f"ttwatch:search_progress:{article.topic_id}:tasks_completed"
+        _cache_redis.incr(agg_key)
+        _cache_redis.expire(agg_key, 7200)
     except Exception:
         pass

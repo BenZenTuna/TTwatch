@@ -100,6 +100,34 @@ async def ws_search_listener():
         await search_redis.close()
 
 
+# === Redis pub/sub listener for search progress notifications ===
+
+async def ws_search_progress_listener():
+    """Background task: subscribe to Redis pub/sub for search progress updates
+    and forward them to the appropriate user's WebSocket connections.
+
+    Workers publish to 'ttwatch:search:progress' (synchronous Redis).
+    This coroutine subscribes asynchronously and bridges to ws_manager.
+    Started during API lifespan; cancelled on shutdown.
+    """
+    progress_redis = aioredis.from_url(settings.REDIS_CACHE_URL)
+    pubsub = progress_redis.pubsub()
+    await pubsub.subscribe("ttwatch:search:progress")
+    try:
+        async for message in pubsub.listen():
+            if message["type"] == "message":
+                try:
+                    data = json.loads(message["data"])
+                    user_id = data.pop("user_id", None)
+                    if user_id:
+                        await ws_manager.notify_user(user_id, data)
+                except (json.JSONDecodeError, KeyError):
+                    pass
+    finally:
+        await pubsub.unsubscribe("ttwatch:search:progress")
+        await progress_redis.close()
+
+
 # === FastAPI Lifespan ===
 
 @asynccontextmanager
@@ -112,13 +140,15 @@ async def lifespan(app: FastAPI):
     # Start background Redis pub/sub listeners
     alert_task = asyncio.create_task(ws_alert_listener())
     search_task = asyncio.create_task(ws_search_listener())
+    progress_task = asyncio.create_task(ws_search_progress_listener())
 
     yield
 
     # Shutdown: cancel background tasks and close persistent clients
     alert_task.cancel()
     search_task.cancel()
-    for task in (alert_task, search_task):
+    progress_task.cancel()
+    for task in (alert_task, search_task, progress_task):
         try:
             await task
         except asyncio.CancelledError:

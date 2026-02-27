@@ -62,14 +62,18 @@ async def create_topic(
         args=[str(user.id), str(topic.id)],
     )
 
-    # Set initial search status so frontend shows "Searching..." immediately
+    # Set initial search status so frontend shows progress immediately
+    now = datetime.now(timezone.utc).isoformat()
     await cache_redis.setex(
-        f"ttwatch:search_status:{topic.id}", 600,
+        f"ttwatch:search_status:{topic.id}", 3600,
         json.dumps({
-            "status": "searching",
-            "started_at": datetime.now(timezone.utc).isoformat(),
+            "status": "generating_queries",
+            "started_at": now,
             "user_id": str(user.id),
         })
+    )
+    await cache_redis.setex(
+        f"ttwatch:search_progress:{topic.id}:started_at", 7200, now
     )
 
     return topic
@@ -168,13 +172,17 @@ async def trigger_topic_search(
     await cache_redis.setex(lock_key, 300, "1")
 
     # Set search status immediately
+    now = datetime.now(timezone.utc).isoformat()
     await cache_redis.setex(
-        f"ttwatch:search_status:{topic_id}", 600,
+        f"ttwatch:search_status:{topic_id}", 3600,
         json.dumps({
             "status": "searching",
-            "started_at": datetime.now(timezone.utc).isoformat(),
+            "started_at": now,
             "user_id": str(user.id),
         })
+    )
+    await cache_redis.setex(
+        f"ttwatch:search_progress:{topic_id}:started_at", 7200, now
     )
 
     from app.celery_client import celery_app
@@ -191,17 +199,84 @@ async def get_topic_search_status(
     topic_id: uuid.UUID,
     user: User = Depends(get_current_user),
 ):
-    """Get the current search status for a topic."""
+    """Get the current search status for a topic.
+
+    Returns a unified response combining search_status and search_progress keys.
+    Tracks all phases: generating_queries → searching → processing → completed.
+    """
+    progress_prefix = f"ttwatch:search_progress:{topic_id}"
+    proc_prefix = f"ttwatch:processing:{topic_id}"
+
     raw = await cache_redis.get(f"ttwatch:search_status:{topic_id}")
-    if not raw:
-        return {"status": "idle"}
+    if raw:
+        data = json.loads(raw)
+        # Cross-tenant check
+        if data.get("user_id") != str(user.id):
+            return {"status": "idle"}
+    else:
+        data = None
 
-    data = json.loads(raw)
-    # Cross-tenant check
-    if data.get("user_id") != str(user.id):
-        return {"status": "idle"}
+    # Read progress counters
+    queries_total_raw = await cache_redis.get(f"{progress_prefix}:queries_total")
+    queries_completed_raw = await cache_redis.get(f"{progress_prefix}:queries_completed")
+    ingested_raw = await cache_redis.get(f"{progress_prefix}:ingested")
+    tasks_completed_raw = await cache_redis.get(f"{progress_prefix}:tasks_completed")
+    started_at_raw = await cache_redis.get(f"{progress_prefix}:started_at")
+    phase_raw = await cache_redis.get(f"{proc_prefix}:phase")
+    expected_raw = await cache_redis.get(f"{proc_prefix}:expected")
 
-    return data
+    queries_total = int(queries_total_raw) if queries_total_raw else None
+    queries_completed = int(queries_completed_raw) if queries_completed_raw else None
+    ingested = int(ingested_raw) if ingested_raw else None
+    tasks_completed = int(tasks_completed_raw) if tasks_completed_raw else None
+    started_at = started_at_raw.decode() if started_at_raw else None
+    phase = phase_raw.decode() if phase_raw else None
+    articles_found = int(expected_raw) if expected_raw else None
+
+    # If status key expired but progress counters exist, infer "processing"
+    if data is None:
+        if tasks_completed is not None and tasks_completed > 0:
+            data = {"status": "processing"}
+        else:
+            return {"status": "idle"}
+
+    status = data.get("status", "idle")
+
+    # If status is "processing" and clustering is complete, transition to "completed"
+    if status == "processing" and phase == "complete":
+        status = "completed"
+
+    response: dict = {"status": status}
+
+    if started_at:
+        response["started_at"] = started_at
+    elif "started_at" in data:
+        response["started_at"] = data["started_at"]
+
+    if "completed_at" in data:
+        response["completed_at"] = data["completed_at"]
+    if "error" in data:
+        response["error"] = data["error"]
+
+    # Add articles_found from either status blob or expected counter
+    if "articles_found" in data:
+        response["articles_found"] = data["articles_found"]
+    elif articles_found is not None:
+        response["articles_found"] = articles_found
+
+    # Add progress counters
+    if queries_total is not None:
+        response["queries_total"] = queries_total
+    if queries_completed is not None:
+        response["queries_completed"] = queries_completed
+    if ingested is not None:
+        response["articles_ingested"] = ingested
+    if tasks_completed is not None:
+        response["tasks_completed"] = tasks_completed
+        af = response.get("articles_found") or articles_found or 0
+        response["tasks_total_estimate"] = af * 5
+
+    return response
 
 
 @router.get("/topics/{topic_id}/processing-status")

@@ -1,7 +1,9 @@
 """Re-cluster articles for a topic using HDBSCAN on Qdrant embeddings."""
+import json
 import os
 import re
 import logging
+from datetime import datetime, timezone
 
 import numpy as np
 import redis as redis_lib
@@ -243,7 +245,27 @@ def recluster_topic(user_id: str, topic_id: str, session=None):
     # Mark processing as complete
     try:
         proc_prefix = f"ttwatch:processing:{topic_id}"
-        _cache_redis.set(f"{proc_prefix}:phase", "complete", ex=3600)
-        _cache_redis.set(f"{proc_prefix}:cluster_count", len(unique_labels), ex=3600)
+        _cache_redis.set(f"{proc_prefix}:phase", "complete", ex=7200)
+        _cache_redis.set(f"{proc_prefix}:cluster_count", len(unique_labels), ex=7200)
+
+        # Update search status to completed
+        now = datetime.now(timezone.utc).isoformat()
+        started_at_raw = _cache_redis.get(f"ttwatch:search_progress:{topic_id}:started_at")
+        started_at = started_at_raw.decode() if started_at_raw else now
+
+        completed_payload = {
+            "status": "completed",
+            "completed_at": now,
+            "started_at": started_at,
+            "cluster_count": len(unique_labels),
+            "user_id": user_id,
+        }
+        status_key = f"ttwatch:search_status:{topic_id}"
+        _cache_redis.setex(status_key, 3600, json.dumps(completed_payload))
+        _cache_redis.publish("ttwatch:search:completed", json.dumps({
+            **completed_payload,
+            "type": "search_completed",
+            "topic_id": topic_id,
+        }))
     except Exception:
         pass

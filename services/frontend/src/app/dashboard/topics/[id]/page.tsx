@@ -29,7 +29,6 @@ import {
   getSentimentHistory,
   triggerTopicSearch,
   getTopicSearchStatus,
-  getProcessingStatus,
   updateTopic,
   getTopics,
 } from "@/lib/api-client";
@@ -40,7 +39,6 @@ import type {
   EntityGraphResponse,
   SentimentPointResponse,
   SearchStatusResponse,
-  ProcessingStatusResponse,
   WSMessage,
 } from "@/lib/types";
 import { BubbleCluster } from "@/components/BubbleCluster";
@@ -87,9 +85,6 @@ export default function TopicPage() {
   const [completedMessage, setCompletedMessage] = useState<string | null>(null);
   const completedTimerRef = useRef<ReturnType<typeof setTimeout>>();
 
-  // Processing progress
-  const [processingStatus, setProcessingStatus] = useState<ProcessingStatusResponse | null>(null);
-
   // Cluster detail panel
   const [selectedCluster, setSelectedCluster] = useState<ClusterResponse | null>(null);
 
@@ -108,14 +103,18 @@ export default function TopicPage() {
   // WebSocket: real-time updates
   const handleWsMessage = useCallback((msg: WSMessage) => {
     if (msg.type === "search_completed" && msg.topic_id === topicId) {
-      const found = msg.articles_found as number;
-      setSearchStatus({ status: "completed", articles_found: found });
+      const found = (msg.articles_found as number) ?? 0;
       setCompletedMessage(`Found ${found} article${found !== 1 ? "s" : ""}`);
       clearTimeout(completedTimerRef.current);
       completedTimerRef.current = setTimeout(() => setCompletedMessage(null), 5000);
       setSearchJustCompleted(true);
-      // Kick off processing status polling
-      getProcessingStatus(topicId).then(setProcessingStatus).catch(() => {});
+      // Immediately re-fetch to get final status
+      getTopicSearchStatus(topicId).then(setSearchStatus).catch(() => {});
+      return;
+    }
+    if (msg.type === "search_progress" && msg.topic_id === topicId) {
+      // Progress update — re-fetch unified status
+      getTopicSearchStatus(topicId).then(setSearchStatus).catch(() => {});
       return;
     }
     if (msg.type !== "connected" && msg.type !== "ping") {
@@ -154,52 +153,31 @@ export default function TopicPage() {
     }
   }, [searchJustCompleted, loadCoreData]);
 
-  // Poll search status while searching
+  // Poll unified search status
   useEffect(() => {
     getTopicSearchStatus(topicId).then(setSearchStatus).catch(() => {});
   }, [topicId]);
 
+  const isActiveStatus = searchStatus.status === "generating_queries"
+    || searchStatus.status === "searching"
+    || searchStatus.status === "processing";
+
   useEffect(() => {
-    if (searchStatus.status !== "searching") return;
+    if (!isActiveStatus) return;
     const interval = setInterval(() => {
       getTopicSearchStatus(topicId).then((s) => {
         setSearchStatus(s);
         if (s.status === "completed") {
-          setCompletedMessage(`Found ${s.articles_found ?? 0} article${s.articles_found !== 1 ? "s" : ""}`);
+          const found = s.articles_found ?? 0;
+          setCompletedMessage(`Found ${found} article${found !== 1 ? "s" : ""}`);
           clearTimeout(completedTimerRef.current);
           completedTimerRef.current = setTimeout(() => setCompletedMessage(null), 5000);
           loadCoreData();
         }
       }).catch(() => {});
-    }, 5000);
+    }, 3000);
     return () => clearInterval(interval);
-  }, [searchStatus.status, topicId, loadCoreData]);
-
-  // Poll processing status
-  useEffect(() => {
-    getProcessingStatus(topicId).then(setProcessingStatus).catch(() => {});
-  }, [topicId]);
-
-  useEffect(() => {
-    if (!processingStatus) return;
-    const { phase } = processingStatus;
-    if (phase === "idle" || phase === "complete") {
-      // On completion, refresh clusters and stop polling
-      if (phase === "complete") {
-        loadCoreData();
-      }
-      return;
-    }
-    const interval = setInterval(() => {
-      getProcessingStatus(topicId).then((s) => {
-        setProcessingStatus(s);
-        if (s.phase === "complete") {
-          loadCoreData();
-        }
-      }).catch(() => {});
-    }, 5000);
-    return () => clearInterval(interval);
-  }, [processingStatus?.phase, topicId, loadCoreData]);
+  }, [isActiveStatus, topicId, loadCoreData]);
 
   // Cleanup completed message timer
   useEffect(() => {
@@ -212,6 +190,8 @@ export default function TopicPage() {
     try {
       await triggerTopicSearch(topicId);
       setSearchStatus({ status: "searching", started_at: new Date().toISOString() });
+      // Immediately poll to get the real status from backend
+      getTopicSearchStatus(topicId).then(setSearchStatus).catch(() => {});
     } catch (err: unknown) {
       const error = err as { response?: { status?: number; data?: { detail?: string } } };
       if (error.response?.status === 429) {
@@ -359,6 +339,7 @@ export default function TopicPage() {
     try {
       await triggerTopicSearch(topicId);
       setSearchStatus({ status: "searching", started_at: new Date().toISOString() });
+      getTopicSearchStatus(topicId).then(setSearchStatus).catch(() => {});
       setQuerySaveMsg("Regenerating queries & searching...");
       setTimeout(() => setQuerySaveMsg(null), 5000);
     } catch (err: unknown) {
@@ -414,20 +395,59 @@ export default function TopicPage() {
 
           <button
             onClick={handleSearchNow}
-            disabled={searchStatus.status === "searching"}
+            disabled={isActiveStatus}
             className="flex items-center gap-2 bg-surface-raised border border-surface-border text-gray-300 px-3 py-1.5 rounded-lg text-sm hover:bg-surface-overlay transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            <Search className={`w-3.5 h-3.5 ${searchStatus.status === "searching" ? "animate-spin" : ""}`} />
-            {searchStatus.status === "searching" ? "Searching..." : "Search Now"}
+            <Search className={`w-3.5 h-3.5 ${isActiveStatus ? "animate-spin" : ""}`} />
+            {isActiveStatus ? "In Progress..." : "Search Now"}
           </button>
         </div>
       </div>
 
-      {/* Search status indicator */}
+      {/* Unified search/processing progress */}
+      {searchStatus.status === "generating_queries" && (
+        <div className="flex items-center gap-2 text-sm text-accent bg-accent/5 border border-accent/20 rounded-lg px-4 py-2">
+          <div className="w-2 h-2 bg-accent rounded-full animate-pulse" />
+          Generating search queries...
+        </div>
+      )}
       {searchStatus.status === "searching" && (
         <div className="flex items-center gap-2 text-sm text-accent bg-accent/5 border border-accent/20 rounded-lg px-4 py-2">
           <div className="w-2 h-2 bg-accent rounded-full animate-pulse" />
-          Searching for articles...
+          Searching{searchStatus.queries_total ? ` (${searchStatus.queries_completed ?? 0}/${searchStatus.queries_total} queries)` : ""}...
+        </div>
+      )}
+      {searchStatus.status === "processing" && (
+        <div className="card p-4 space-y-3">
+          <div className="flex items-center gap-2">
+            <div className="w-2 h-2 bg-accent rounded-full animate-pulse" />
+            <span className="text-sm font-medium text-gray-200">
+              Processing articles...
+            </span>
+            {searchStatus.articles_found != null && searchStatus.articles_found > 0 && (
+              <span className="text-xs text-gray-500 ml-auto">
+                {searchStatus.articles_ingested ?? 0}/{searchStatus.articles_found} ingested
+              </span>
+            )}
+          </div>
+          {searchStatus.tasks_total_estimate != null && searchStatus.tasks_total_estimate > 0 && (
+            <div className="space-y-1">
+              <div className="flex justify-between text-xs">
+                <span className="text-gray-400">Tasks completed</span>
+                <span className="text-gray-500">
+                  {searchStatus.tasks_completed ?? 0}/{searchStatus.tasks_total_estimate}
+                </span>
+              </div>
+              <div className="h-1.5 bg-surface-overlay rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-accent rounded-full transition-all duration-500"
+                  style={{
+                    width: `${Math.min(100, Math.round(((searchStatus.tasks_completed ?? 0) / searchStatus.tasks_total_estimate) * 100))}%`,
+                  }}
+                />
+              </div>
+            </div>
+          )}
         </div>
       )}
       {completedMessage && (
@@ -445,51 +465,6 @@ export default function TopicPage() {
         <div className="flex items-center gap-2 text-sm text-amber-400 bg-amber-400/5 border border-amber-400/20 rounded-lg px-4 py-2">
           <AlertCircle className="w-3.5 h-3.5" />
           {searchError}
-        </div>
-      )}
-
-      {/* Processing progress */}
-      {processingStatus && processingStatus.phase !== "idle" && processingStatus.phase !== "complete" && (
-        <div className="card p-4 space-y-3">
-          <div className="flex items-center gap-2">
-            <div className="w-2 h-2 bg-accent rounded-full animate-pulse" />
-            <span className="text-sm font-medium text-gray-200">
-              {processingStatus.phase === "ingesting" && "Fetching articles..."}
-              {processingStatus.phase === "processing" && "Analyzing articles..."}
-              {processingStatus.phase === "clustering" && "Building clusters..."}
-            </span>
-            {processingStatus.total_articles > 0 && (
-              <span className="text-xs text-gray-500 ml-auto">
-                {processingStatus.total_articles} articles dispatched
-              </span>
-            )}
-          </div>
-          {processingStatus.total_articles > 0 && processingStatus.phase !== "ingesting" && (
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-              {([
-                { label: "Embedded", value: processingStatus.embedded },
-                { label: "Summarized", value: processingStatus.summarized },
-                { label: "Sentiment", value: processingStatus.sentiment },
-                { label: "Relevance", value: processingStatus.relevance },
-              ] as const).map(({ label, value }) => {
-                const pct = Math.min(100, Math.round((value / processingStatus.total_articles) * 100));
-                return (
-                  <div key={label} className="space-y-1">
-                    <div className="flex justify-between text-xs">
-                      <span className="text-gray-400">{label}</span>
-                      <span className="text-gray-500">{value}/{processingStatus.total_articles}</span>
-                    </div>
-                    <div className="h-1.5 bg-surface-overlay rounded-full overflow-hidden">
-                      <div
-                        className="h-full bg-accent rounded-full transition-all duration-500"
-                        style={{ width: `${pct}%` }}
-                      />
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
         </div>
       )}
 
@@ -626,7 +601,7 @@ export default function TopicPage() {
               )}
               <button
                 onClick={handleRegenerateQueries}
-                disabled={searchStatus.status === "searching"}
+                disabled={isActiveStatus}
                 className="flex items-center gap-1.5 bg-surface-overlay border border-surface-border text-gray-300 px-3 py-1.5 rounded-md text-sm hover:bg-surface-raised transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 <RotateCcw className="w-3.5 h-3.5" />
