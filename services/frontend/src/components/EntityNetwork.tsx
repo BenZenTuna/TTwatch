@@ -279,8 +279,8 @@ export function EntityNetwork({
             typeof l.target === "object"
               ? (l.target as NetworkNode).id
               : l.target;
-          if (src === d.id) connectedIds.add(tgt);
-          if (tgt === d.id) connectedIds.add(src);
+          if (src === d.id) connectedIds.add(String(tgt));
+          if (tgt === d.id) connectedIds.add(String(src));
         });
         nodeGroups
           .select("circle")

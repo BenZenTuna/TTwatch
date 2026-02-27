@@ -18,8 +18,9 @@ _engine = create_engine(
         "DATABASE_URL",
         "postgresql://ttwatch_worker:changeme@postgres:5432/ttwatch",
     ),
-    pool_size=5,
-    max_overflow=5,
+    pool_size=20,
+    max_overflow=15,
+    pool_timeout=60,
 )
 _SessionFactory = sessionmaker(bind=_engine)
 

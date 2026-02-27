@@ -14,9 +14,10 @@ import {
   WifiOff,
   Shield,
   RefreshCw,
+  Trash2,
 } from "lucide-react";
 import { useAppStore } from "@/lib/store";
-import { getTopics, logout, getVersionStatus, triggerTopicSearch } from "@/lib/api-client";
+import { getTopics, logout, getVersionStatus, triggerTopicSearch, deleteTopic } from "@/lib/api-client";
 import type { WSMessage } from "@/lib/types";
 
 interface SidebarProps {
@@ -75,6 +76,25 @@ export function Sidebar({ wsConnected, lastWsMessage }: SidebarProps) {
           return next;
         });
       }, 1000);
+    }
+  }
+
+  async function handleDeleteTopic(e: React.MouseEvent, topicId: string, topicName: string) {
+    e.stopPropagation();
+    if (!confirm(`Delete "${topicName}"? This will remove all associated articles, clusters, and data.`)) {
+      return;
+    }
+    try {
+      await deleteTopic(topicId);
+      const updated = await getTopics();
+      setTopics(updated);
+      // If we deleted the currently selected topic, navigate away
+      if (selectedTopicId === topicId) {
+        selectTopic(null);
+        router.push("/dashboard");
+      }
+    } catch {
+      // Silently handle — topic may already be deleted
     }
   }
 
@@ -161,6 +181,13 @@ export function Sidebar({ wsConnected, lastWsMessage }: SidebarProps) {
                   title="Search now"
                 >
                   <RefreshCw className={`w-3 h-3 ${searchingTopics.has(topic.id) ? "animate-spin text-accent" : ""}`} />
+                </button>
+                <button
+                  onClick={(e) => handleDeleteTopic(e, topic.id, topic.name)}
+                  className="opacity-0 group-hover:opacity-100 p-1 text-gray-500 hover:text-red-400 transition-all"
+                  title="Delete topic"
+                >
+                  <Trash2 className="w-3 h-3" />
                 </button>
               </div>
             ))

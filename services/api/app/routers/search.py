@@ -46,9 +46,9 @@ async def semantic_search(
     query_embedding = (await embedder.embed([req.query]))[0]
 
     qdrant = get_qdrant_client()
-    results = await qdrant.search(
+    results = await qdrant.query_points(
         collection_name="articles",
-        query_vector=query_embedding,
+        query=query_embedding,
         query_filter=Filter(must=[
             FieldCondition(key="user_id", match=MatchValue(value=str(user.id))),
             FieldCondition(key="topic_id", match=MatchValue(value=str(req.topic_id))),
@@ -56,12 +56,12 @@ async def semantic_search(
         limit=req.limit,
     )
 
-    if not results:
+    if not results.points:
         return []
 
     # Fetch full article records from PostgreSQL
-    article_ids = [hit.id for hit in results]
-    score_map = {str(hit.id): hit.score for hit in results}
+    article_ids = [hit.id for hit in results.points]
+    score_map = {str(hit.id): hit.score for hit in results.points}
 
     articles = await db.execute(
         select(Article).where(
