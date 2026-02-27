@@ -190,6 +190,11 @@ export async function getTopicSearchStatus(topicId: string): Promise<SearchStatu
   return data;
 }
 
+export async function cancelTopicSearch(topicId: string) {
+  const { data } = await api.post(`/api/topics/${topicId}/search/cancel`);
+  return data;
+}
+
 export async function getProcessingStatus(topicId: string): Promise<ProcessingStatusResponse> {
   const { data } = await api.get<ProcessingStatusResponse>(`/api/topics/${topicId}/processing-status`);
   return data;

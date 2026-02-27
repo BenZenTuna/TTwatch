@@ -11,6 +11,7 @@ import {
   RefreshCw,
   Bell,
   Search,
+  Square,
   AlertCircle,
   ChevronDown,
   ChevronRight,
@@ -28,6 +29,7 @@ import {
   getEntityGraph,
   getSentimentHistory,
   triggerTopicSearch,
+  cancelTopicSearch,
   getTopicSearchStatus,
   updateTopic,
   getTopics,
@@ -201,6 +203,18 @@ export default function TopicPage() {
       }
     }
   }, [topicId]);
+
+  // Handle cancel search
+  const handleCancelSearch = useCallback(async () => {
+    try {
+      await cancelTopicSearch(topicId);
+      setSearchStatus({ status: "completed" });
+      loadCoreData();
+    } catch {
+      // If cancel fails, force local status reset so UI unblocks
+      setSearchStatus({ status: "completed" });
+    }
+  }, [topicId, loadCoreData]);
 
   // Load tab-specific data lazily
   useEffect(() => {
@@ -401,6 +415,16 @@ export default function TopicPage() {
             <Search className={`w-3.5 h-3.5 ${isActiveStatus ? "animate-spin" : ""}`} />
             {isActiveStatus ? "In Progress..." : "Search Now"}
           </button>
+          {isActiveStatus && (
+            <button
+              onClick={handleCancelSearch}
+              className="flex items-center gap-2 bg-red-900/30 border border-red-700/40 text-red-400 px-3 py-1.5 rounded-lg text-sm hover:bg-red-900/50 transition-colors"
+              title="Stop search"
+            >
+              <Square className="w-3.5 h-3.5" />
+              Stop
+            </button>
+          )}
         </div>
       </div>
 
@@ -408,13 +432,27 @@ export default function TopicPage() {
       {searchStatus.status === "generating_queries" && (
         <div className="flex items-center gap-2 text-sm text-accent bg-accent/5 border border-accent/20 rounded-lg px-4 py-2">
           <div className="w-2 h-2 bg-accent rounded-full animate-pulse" />
-          Generating search queries...
+          <span className="flex-1">Generating search queries...</span>
+          <button
+            onClick={handleCancelSearch}
+            className="text-red-400 hover:text-red-300 transition-colors p-1 rounded hover:bg-red-900/30"
+            title="Stop"
+          >
+            <Square className="w-3.5 h-3.5" />
+          </button>
         </div>
       )}
       {searchStatus.status === "searching" && (
         <div className="flex items-center gap-2 text-sm text-accent bg-accent/5 border border-accent/20 rounded-lg px-4 py-2">
           <div className="w-2 h-2 bg-accent rounded-full animate-pulse" />
-          Searching{searchStatus.queries_total ? ` (${searchStatus.queries_completed ?? 0}/${searchStatus.queries_total} queries)` : ""}...
+          <span className="flex-1">Searching{searchStatus.queries_total ? ` (${searchStatus.queries_completed ?? 0}/${searchStatus.queries_total} queries)` : ""}...</span>
+          <button
+            onClick={handleCancelSearch}
+            className="text-red-400 hover:text-red-300 transition-colors p-1 rounded hover:bg-red-900/30"
+            title="Stop"
+          >
+            <Square className="w-3.5 h-3.5" />
+          </button>
         </div>
       )}
       {searchStatus.status === "processing" && (
@@ -429,6 +467,13 @@ export default function TopicPage() {
                 {searchStatus.articles_ingested ?? 0}/{searchStatus.articles_found} ingested
               </span>
             )}
+            <button
+              onClick={handleCancelSearch}
+              className="text-red-400 hover:text-red-300 transition-colors p-1 rounded hover:bg-red-900/30 ml-1"
+              title="Stop processing"
+            >
+              <Square className="w-3.5 h-3.5" />
+            </button>
           </div>
           {searchStatus.tasks_total_estimate != null && searchStatus.tasks_total_estimate > 0 && (
             <div className="space-y-1">

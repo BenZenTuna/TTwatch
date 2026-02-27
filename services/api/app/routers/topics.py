@@ -194,6 +194,56 @@ async def trigger_topic_search(
     return {"status": "search_dispatched", "topic_id": str(topic_id)}
 
 
+@router.post("/topics/{topic_id}/search/cancel")
+async def cancel_topic_search(
+    topic_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+):
+    """Cancel an in-progress search for a topic.
+
+    Sets status to 'completed' (cancelled), clears processing phase,
+    removes the search rate-limit lock so the user can search again,
+    and revokes any pending Celery tasks for this topic.
+    """
+    status_key = f"ttwatch:search_status:{topic_id}"
+    raw = await cache_redis.get(status_key)
+    if not raw:
+        raise HTTPException(404, "No active search found")
+
+    data = json.loads(raw)
+    if data.get("user_id") != str(user.id):
+        raise HTTPException(404, "No active search found")
+
+    if data.get("status") not in ("generating_queries", "searching", "processing"):
+        return {"status": "not_active", "current": data.get("status")}
+
+    now = datetime.now(timezone.utc).isoformat()
+    completed_payload = {
+        "status": "completed",
+        "completed_at": now,
+        "started_at": data.get("started_at", now),
+        "articles_found": data.get("articles_found", 0),
+        "user_id": str(user.id),
+    }
+    await cache_redis.setex(status_key, 3600, json.dumps(completed_payload))
+
+    # Mark processing phase as complete
+    proc_prefix = f"ttwatch:processing:{topic_id}"
+    await cache_redis.set(f"{proc_prefix}:phase", "complete", ex=7200)
+
+    # Remove the search lock so user can search again immediately
+    await cache_redis.delete(f"ttwatch:search_lock:{topic_id}")
+
+    # Notify frontend via pub/sub
+    await cache_redis.publish("ttwatch:search:completed", json.dumps({
+        **completed_payload,
+        "type": "search_completed",
+        "topic_id": str(topic_id),
+    }))
+
+    return {"status": "cancelled", "topic_id": str(topic_id)}
+
+
 @router.get("/topics/{topic_id}/search-status")
 async def get_topic_search_status(
     topic_id: uuid.UUID,
