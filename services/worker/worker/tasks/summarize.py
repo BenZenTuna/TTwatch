@@ -5,6 +5,7 @@ import re
 
 import redis as redis_lib
 from sqlalchemy import select, or_
+from sqlalchemy.exc import NoResultFound
 
 from worker.celeryconfig import app
 from worker.rls import with_rls_context
@@ -87,11 +88,16 @@ def clean_summary(text: str) -> str:
 
 @app.task(name="summarize_article", max_retries=3, default_retry_delay=30)
 @with_rls_context
-def summarize_article(user_id: str, article_id: str, session=None):
+def summarize_article(user_id: str, article_id: str, topic_id: str = None,
+                      session=None):
     """Generate a 2-sentence summary (100-150 tokens) and store on article."""
-    article = session.execute(
-        select(Article).where(Article.id == article_id)
-    ).scalar_one()
+    try:
+        article = session.execute(
+            select(Article).where(Article.id == article_id)
+        ).scalar_one()
+    except NoResultFound:
+        logger.warning(f"Article {article_id} not found (deleted by dedup?), skipping summarize")
+        return
 
     raw_text = fetch_article_text(article.raw_storage_key)
 

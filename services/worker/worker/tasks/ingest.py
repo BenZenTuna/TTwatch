@@ -1,4 +1,5 @@
 """Article ingestion pipeline: fetch → extract → dedup → store → fan-out."""
+import configparser
 import hashlib
 import logging
 import os
@@ -12,6 +13,16 @@ from sqlalchemy import select
 from worker.celeryconfig import app
 from worker.rls import with_rls_context
 from app.models import Article
+
+# Custom trafilatura config with reduced download timeout (10s vs default 30s).
+# Prevents slow-failing URLs (SSL errors, redirects) from blocking workers.
+_traf_config = configparser.ConfigParser()
+_traf_config.read_dict({"DEFAULT": {
+    "DOWNLOAD_TIMEOUT": "10",
+    "MAX_REDIRECTS": "2",
+    "MIN_FILE_SIZE": "0",
+    "MIN_EXTRACTED_SIZE": "0",
+}})
 
 _cache_redis = redis_lib.from_url(
     os.environ.get("REDIS_CACHE_URL", "redis://redis:6379/3")
@@ -100,7 +111,7 @@ def ingest_article(self, user_id: str, topic_id: str, url: str,
 
     # --- Fetch and extract with trafilatura ---
     try:
-        downloaded = trafilatura.fetch_url(url)
+        downloaded = trafilatura.fetch_url(url, config=_traf_config)
         if not downloaded:
             logger.warning(f"Failed to fetch: {url}")
             try:
@@ -212,11 +223,20 @@ def ingest_article(self, user_id: str, topic_id: str, url: str,
     from worker.tasks.relevance import score_relevance
 
     article_id = str(article.id)
-    embed_article.delay(user_id, article_id)
-    summarize_article.delay(user_id, article_id)
-    classify_sentiment.apply_async(args=[user_id, article_id], countdown=3)
-    score_relevance.apply_async(args=[user_id, article_id], countdown=6)
-    extract_entities.apply_async(args=[user_id, article_id], countdown=10)
+    # All sub-tasks use countdown to ensure the ingest transaction commits
+    # before they try to load the article. Without this, gevent greenlets
+    # can pick up embed/summarize immediately and hit NoResultFound.
+    # topic_id is passed so error handlers can update progress tracking.
+    embed_article.apply_async(
+        args=[user_id, article_id], kwargs={"topic_id": topic_id}, countdown=1)
+    summarize_article.apply_async(
+        args=[user_id, article_id], kwargs={"topic_id": topic_id}, countdown=1)
+    classify_sentiment.apply_async(
+        args=[user_id, article_id], kwargs={"topic_id": topic_id}, countdown=3)
+    score_relevance.apply_async(
+        args=[user_id, article_id], kwargs={"topic_id": topic_id}, countdown=6)
+    extract_entities.apply_async(
+        args=[user_id, article_id], kwargs={"topic_id": topic_id}, countdown=10)
 
     # Track ingestion progress
     try:

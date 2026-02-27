@@ -2,7 +2,7 @@
 import json
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 import httpx
 import redis as redis_lib
@@ -221,3 +221,92 @@ def run_topic_search(user_id: str, topic_id: str, session=None):
         except Exception:
             pass
         raise
+
+
+_STALL_TIMEOUT = timedelta(minutes=5)
+
+
+@app.task(name="detect_stalled_pipelines")
+def detect_stalled_pipelines():
+    """Safety net: detect and force-complete pipelines stuck at 'processing'.
+
+    Scans all ttwatch:search_status:* keys. If a pipeline has been in
+    'processing' status for over 5 minutes, forces the phase to 'complete'
+    and triggers recluster_topic so the frontend gets an update.
+    """
+    now = datetime.now(timezone.utc)
+    unstuck = 0
+
+    try:
+        for key in _search_redis.scan_iter("ttwatch:search_status:*"):
+            raw = _search_redis.get(key)
+            if not raw:
+                continue
+            try:
+                data = json.loads(raw)
+            except (json.JSONDecodeError, TypeError):
+                continue
+
+            if data.get("status") != "processing":
+                continue
+
+            started_at_str = data.get("started_at")
+            if not started_at_str:
+                continue
+
+            try:
+                started_at = datetime.fromisoformat(started_at_str)
+            except (ValueError, TypeError):
+                continue
+
+            if now - started_at < _STALL_TIMEOUT:
+                continue
+
+            # Pipeline is stalled — extract topic_id from key
+            topic_id = key.decode().split(":")[-1] if isinstance(key, bytes) else key.split(":")[-1]
+            user_id = data.get("user_id", "")
+
+            # Force phase to complete
+            proc_prefix = f"ttwatch:processing:{topic_id}"
+            current_phase_raw = _search_redis.get(f"{proc_prefix}:phase")
+            current_phase = current_phase_raw.decode() if current_phase_raw else ""
+
+            if current_phase in ("complete", "clustering"):
+                continue  # Already moving forward
+
+            logger.warning(
+                f"Stall detected for topic {topic_id}: status='processing' "
+                f"since {started_at_str}, phase='{current_phase}'. Forcing completion."
+            )
+
+            # Dispatch recluster if not already dispatched
+            lock_key = f"{proc_prefix}:cluster_dispatched"
+            if _search_redis.set(lock_key, "1", nx=True, ex=7200):
+                app.send_task("recluster_topic", args=[user_id, topic_id])
+                _search_redis.set(f"{proc_prefix}:phase", "clustering", ex=7200)
+                logger.info(f"Force-dispatched recluster_topic for stalled topic {topic_id}")
+            else:
+                # Clustering was already dispatched but didn't complete — force complete
+                _search_redis.set(f"{proc_prefix}:phase", "complete", ex=7200)
+                completed_payload = {
+                    "status": "completed",
+                    "completed_at": now.isoformat(),
+                    "started_at": started_at_str,
+                    "articles_found": data.get("articles_found", 0),
+                    "user_id": user_id,
+                }
+                _search_redis.setex(key, 3600, json.dumps(completed_payload))
+                _search_redis.publish("ttwatch:search:completed", json.dumps({
+                    **completed_payload,
+                    "type": "search_completed",
+                    "topic_id": topic_id,
+                }))
+
+            unstuck += 1
+
+    except Exception as e:
+        logger.error(f"detect_stalled_pipelines failed: {e}")
+
+    if unstuck:
+        logger.info(f"detect_stalled_pipelines: unstuck {unstuck} pipeline(s)")
+    return {"unstuck": unstuck}

@@ -5,6 +5,7 @@ import re
 
 import redis as redis_lib
 from sqlalchemy import select
+from sqlalchemy.exc import NoResultFound
 
 from worker.celeryconfig import app
 from worker.rls import with_rls_context
@@ -25,16 +26,21 @@ RELEVANCE_THRESHOLD = 0.3
 
 @app.task(name="score_relevance", max_retries=2, default_retry_delay=60)
 @with_rls_context
-def score_relevance(user_id: str, article_id: str, session=None):
+def score_relevance(user_id: str, article_id: str, topic_id: str = None,
+                    session=None):
     """Score how relevant an article is to its parent topic.
 
     Uses the LLM to rate relevance on a 0.0–1.0 scale. Articles scoring
     below RELEVANCE_THRESHOLD are marked is_duplicate=True so they are
     filtered from display, clustering, and downstream processing.
     """
-    article = session.execute(
-        select(Article).where(Article.id == article_id)
-    ).scalar_one()
+    try:
+        article = session.execute(
+            select(Article).where(Article.id == article_id)
+        ).scalar_one()
+    except NoResultFound:
+        logger.warning(f"Article {article_id} not found (deleted by dedup?), skipping relevance")
+        return
 
     # Skip articles already flagged as duplicates by semantic dedup
     if article.is_duplicate and article.duplicate_of is not None:

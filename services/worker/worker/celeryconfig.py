@@ -115,4 +115,8 @@ app.conf.beat_schedule = {
         "task": "check_service_versions",
         "schedule": crontab(hour=6, minute=30),  # Daily at 6:30 AM
     },
+    "detect-stalled-pipelines": {
+        "task": "detect_stalled_pipelines",
+        "schedule": crontab(minute="*/2"),  # Every 2 minutes
+    },
 }

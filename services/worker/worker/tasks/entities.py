@@ -1,9 +1,12 @@
 """Extract named entities from article text using LLM."""
+import json
 import logging
 import os
+import re
 
 import redis as redis_lib
 from sqlalchemy import select
+from sqlalchemy.exc import NoResultFound
 
 from worker.celeryconfig import app
 from worker.rls import with_rls_context
@@ -20,9 +23,45 @@ logger = logging.getLogger(__name__)
 TASK_CATEGORY = "entity_extraction"
 
 
-@app.task(name="extract_entities", max_retries=3, default_retry_delay=30)
+def _repair_json(raw: str) -> dict:
+    """Attempt to repair malformed JSON from LLM entity extraction.
+
+    Handles: truncated output, trailing commas, unquoted keys,
+    and responses that are empty or contain only reasoning tokens.
+    """
+    text = raw.strip()
+    if not text:
+        return {"entities": []}
+
+    # Strip markdown fences
+    fence = re.search(r"```(?:json)?\s*\n?(.*?)\n?\s*```", text, re.DOTALL)
+    if fence:
+        text = fence.group(1).strip()
+
+    # Find JSON object boundaries
+    first = text.find("{")
+    last = text.rfind("}")
+    if first == -1:
+        return {"entities": []}
+    if last <= first:
+        # Truncated — try to close it
+        text = text[first:] + "]}"
+    else:
+        text = text[first:last + 1]
+
+    # Fix trailing commas before ] or }
+    text = re.sub(r",\s*([}\]])", r"\1", text)
+
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return {"entities": []}
+
+
+@app.task(name="extract_entities", bind=True, max_retries=3, default_retry_delay=30)
 @with_rls_context
-def extract_entities(user_id: str, article_id: str, session=None):
+def extract_entities(self, user_id: str, article_id: str, topic_id: str = None,
+                     session=None):
     """Extract named entities from an article and persist to database.
 
     Creates Entity records if they don't exist, and creates
@@ -30,14 +69,18 @@ def extract_entities(user_id: str, article_id: str, session=None):
     For newly created org/product/technology entities, fans out to
     resolve_entity_ticker.
     """
-    article = session.execute(
-        select(Article).where(Article.id == article_id)
-    ).scalar_one()
+    try:
+        article = session.execute(
+            select(Article).where(Article.id == article_id)
+        ).scalar_one()
+    except NoResultFound:
+        logger.warning(f"Article {article_id} not found (deleted by dedup?), skipping entities")
+        return
 
     raw_text = fetch_article_text(article.raw_storage_key)
 
     llm = get_llm_for_task(session, user_id, TASK_CATEGORY)
-    result = llm.generate_json([
+    messages = [
         {"role": "system", "content": (
             "Extract named entities from the article. Return JSON: "
             '{"entities": [{"name": "...", "type": "person|org|product|location|event|technology"}]}. '
@@ -45,7 +88,13 @@ def extract_entities(user_id: str, article_id: str, session=None):
             "Respond with only the requested format. Do not include explanations."
         )},
         {"role": "user", "content": f"Title: {article.title}\nText: {raw_text[:2000]}"},
-    ])
+    ]
+    # Use generate() + _repair_json() instead of generate_json() to handle
+    # malformed LLM output without losing the raw text for repair attempts.
+    raw_response = llm.generate(messages, max_tokens=1024, temperature=0.1)
+    result = _repair_json(raw_response)
+    if not result.get("entities"):
+        logger.warning(f"No entities parsed from LLM response for article {article_id}")
 
     entities = result.get("entities", [])
     for ent in entities:

@@ -4,6 +4,7 @@ import os
 
 import redis as redis_lib
 from sqlalchemy import select
+from sqlalchemy.exc import NoResultFound
 
 from worker.celeryconfig import app
 from worker.rls import with_rls_context
@@ -22,15 +23,20 @@ TASK_CATEGORY = "sentiment"
 
 @app.task(name="classify_sentiment", max_retries=3, default_retry_delay=30)
 @with_rls_context
-def classify_sentiment(user_id: str, article_id: str, session=None):
+def classify_sentiment(user_id: str, article_id: str, topic_id: str = None,
+                       session=None):
     """Classify sentiment of an article on a -1.0 to 1.0 scale.
 
     -1.0 = strongly negative, 0.0 = neutral, 1.0 = strongly positive.
     Stores the result on the article's sentiment_score column.
     """
-    article = session.execute(
-        select(Article).where(Article.id == article_id)
-    ).scalar_one()
+    try:
+        article = session.execute(
+            select(Article).where(Article.id == article_id)
+        ).scalar_one()
+    except NoResultFound:
+        logger.warning(f"Article {article_id} not found (deleted by dedup?), skipping sentiment")
+        return
 
     raw_text = fetch_article_text(article.raw_storage_key)
 
