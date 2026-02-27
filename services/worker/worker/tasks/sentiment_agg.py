@@ -1,8 +1,7 @@
 """Aggregate article sentiment into periodic sentiment_history snapshots."""
 import logging
-from datetime import datetime, timezone
 
-from sqlalchemy import select, func
+from sqlalchemy import select, func, cast, Date
 
 from worker.celeryconfig import app
 from worker.rls import with_rls_context
@@ -16,59 +15,67 @@ logger = logging.getLogger(__name__)
 def compute_sentiment_history(user_id: str, topic_id: str, session=None):
     """Aggregate per-cluster sentiment into daily sentiment_history snapshots.
 
-    For each cluster, computes the average sentiment_score of articles
-    ingested today and upserts a sentiment_history record.
+    For each cluster, groups all non-duplicate articles with sentiment scores
+    by ingestion date, then upserts a sentiment_history record per
+    (cluster, date) pair. This backfill approach means:
 
-    Uses datetime.now(timezone.utc).date() — NOT date.today() — to ensure
-    UTC-consistent date boundaries regardless of server timezone.
+    - Missed runs are self-healing: the next run catches up all dates.
+    - Timing with recluster_topic doesn't matter: articles only appear once
+      they have both a cluster_id and a sentiment_score.
+    - Idempotent: running multiple times produces the same result.
     """
-    today = datetime.now(timezone.utc).date()
-
     clusters = session.execute(
         select(Cluster.id, Cluster.keyword).where(Cluster.topic_id == topic_id)
     ).all()
 
-    created_count = 0
+    if not clusters:
+        logger.debug(f"No clusters yet for topic {topic_id}, skipping sentiment agg")
+        return
+
+    upserted_count = 0
     for cluster_id, cluster_keyword in clusters:
-        agg = session.execute(
+        # Aggregate sentiment by date for all articles in this cluster
+        rows = session.execute(
             select(
+                cast(Article.ingested_at, Date).label("day"),
                 func.avg(Article.sentiment_score),
                 func.count(Article.id),
             ).where(
                 Article.cluster_id == cluster_id,
                 Article.sentiment_score.isnot(None),
-                func.date(Article.ingested_at) == today,
                 Article.is_duplicate == False,
-            )
-        ).one()
+            ).group_by("day")
+        ).all()
 
-        avg_sentiment, article_count = agg
-        if article_count == 0:
-            continue
+        for day, avg_sentiment, article_count in rows:
+            if article_count == 0:
+                continue
 
-        # Upsert: check if record exists for this cluster+date
-        existing = session.execute(
-            select(SentimentHistory).where(
-                SentimentHistory.user_id == user_id,
-                SentimentHistory.cluster_id == cluster_id,
-                SentimentHistory.period_start == today,
-            )
-        ).scalar_one_or_none()
+            existing = session.execute(
+                select(SentimentHistory).where(
+                    SentimentHistory.user_id == user_id,
+                    SentimentHistory.cluster_id == cluster_id,
+                    SentimentHistory.period_start == day,
+                )
+            ).scalar_one_or_none()
 
-        if existing:
-            existing.avg_sentiment = float(avg_sentiment)
-            existing.article_count = article_count
-            existing.cluster_keyword = cluster_keyword
-        else:
-            session.add(SentimentHistory(
-                user_id=user_id,
-                topic_id=topic_id,
-                cluster_id=cluster_id,
-                cluster_keyword=cluster_keyword,
-                period_start=today,
-                avg_sentiment=float(avg_sentiment),
-                article_count=article_count,
-            ))
-            created_count += 1
+            if existing:
+                existing.avg_sentiment = float(avg_sentiment)
+                existing.article_count = article_count
+                existing.cluster_keyword = cluster_keyword
+            else:
+                session.add(SentimentHistory(
+                    user_id=user_id,
+                    topic_id=topic_id,
+                    cluster_id=cluster_id,
+                    cluster_keyword=cluster_keyword,
+                    period_start=day,
+                    avg_sentiment=float(avg_sentiment),
+                    article_count=article_count,
+                ))
+            upserted_count += 1
 
-    logger.info(f"Sentiment history: {created_count} new snapshots for topic {topic_id}")
+    logger.info(
+        f"Sentiment history: upserted {upserted_count} snapshots "
+        f"across {len(clusters)} clusters for topic {topic_id}"
+    )

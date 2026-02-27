@@ -10,6 +10,7 @@ COPY services/api/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY services/api/app /app/app
+COPY scripts /app/scripts
 COPY config/alembic.ini /app/alembic.ini
 COPY migrations /app/migrations
 

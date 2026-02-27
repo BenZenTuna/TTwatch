@@ -83,6 +83,24 @@ export interface EntityResponse {
   first_seen: string;
 }
 
+export interface EntityNodeResponse {
+  id: string;
+  name: string;
+  type: string;
+  article_count: number;
+}
+
+export interface EntityEdgeResponse {
+  source: string;
+  target: string;
+  weight: number;
+}
+
+export interface EntityGraphResponse {
+  entities: EntityNodeResponse[];
+  edges: EntityEdgeResponse[];
+}
+
 export interface SentimentPointResponse {
   cluster_id: string;
   cluster_keyword: string;

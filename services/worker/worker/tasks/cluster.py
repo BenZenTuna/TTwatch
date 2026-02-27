@@ -63,7 +63,39 @@ def recluster_topic(user_id: str, topic_id: str, session=None):
         offset = next_offset
 
     all_points.sort(key=lambda p: p.payload.get("ingested_at", ""), reverse=True)
-    selected_ids = [p.id for p in all_points[:MAX_CLUSTER_ARTICLES]]
+    candidate_ids = [p.id for p in all_points[:MAX_CLUSTER_ARTICLES]]
+
+    # Exclude low-relevance and duplicate articles from clustering.
+    # relevance_score lives in PostgreSQL, not Qdrant payloads, so we
+    # filter here after the Qdrant scroll.
+    if candidate_ids:
+        from worker.tasks.relevance import RELEVANCE_THRESHOLD
+        excluded = set(
+            str(row[0]) for row in session.execute(
+                select(Article.id).where(
+                    Article.id.in_([str(cid) for cid in candidate_ids]),
+                    Article.is_duplicate == True,
+                )
+            ).all()
+        )
+        low_relevance = set(
+            str(row[0]) for row in session.execute(
+                select(Article.id).where(
+                    Article.id.in_([str(cid) for cid in candidate_ids]),
+                    Article.relevance_score.isnot(None),
+                    Article.relevance_score < RELEVANCE_THRESHOLD,
+                )
+            ).all()
+        )
+        excluded |= low_relevance
+        selected_ids = [cid for cid in candidate_ids if str(cid) not in excluded]
+        if excluded:
+            logger.info(
+                f"Topic {topic_id}: excluded {len(excluded)} articles "
+                f"(low-relevance/duplicate) from clustering"
+            )
+    else:
+        selected_ids = candidate_ids
 
     if len(selected_ids) < 10:
         logger.info(f"Topic {topic_id}: only {len(selected_ids)} articles, skipping")

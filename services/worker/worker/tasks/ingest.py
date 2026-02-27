@@ -39,7 +39,8 @@ def ingest_article(self, user_id: str, topic_id: str, url: str,
                    session=None):
     """Download, extract, dedup, and store a single article.
 
-    On success, fans out to summarize, embed, extract_entities, classify_sentiment.
+    On success, fans out to summarize, embed, extract_entities,
+    classify_sentiment, and score_relevance.
 
     Uses bind=True for self.retry() support. The with_rls_context decorator
     detects the Task instance and shifts arguments correctly.
@@ -136,17 +137,19 @@ def ingest_article(self, user_id: str, topic_id: str, url: str,
     # Mark URL as ingested in Redis
     _dedup_redis.sadd(dedup_key, url)
 
-    # --- Fan-out to ALL 4 processing tasks ---
+    # --- Fan-out to ALL 5 processing tasks ---
     from worker.tasks.summarize import summarize_article
     from worker.tasks.embed import embed_article
     from worker.tasks.entities import extract_entities
     from worker.tasks.sentiment import classify_sentiment
+    from worker.tasks.relevance import score_relevance
 
     article_id = str(article.id)
     summarize_article.delay(user_id, article_id)
     embed_article.delay(user_id, article_id)
     extract_entities.delay(user_id, article_id)
     classify_sentiment.delay(user_id, article_id)
+    score_relevance.delay(user_id, article_id)
 
     logger.info(f"Ingested article {article_id}: {title[:80]}")
     return {"status": "ingested", "article_id": article_id}

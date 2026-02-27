@@ -2,7 +2,11 @@
 
 import { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import * as d3 from "d3";
-import type { EntityResponse } from "@/lib/types";
+import type {
+  EntityNodeResponse,
+  EntityEdgeResponse,
+  EntityGraphResponse,
+} from "@/lib/types";
 import { getClusterColor } from "@/lib/design-tokens";
 import {
   NetworkNode,
@@ -11,8 +15,8 @@ import {
 } from "@/lib/force-simulation";
 
 interface EntityNetworkProps {
-  entities: EntityResponse[];
-  onEntityClick?: (entity: EntityResponse) => void;
+  graph: EntityGraphResponse;
+  onEntityClick?: (entity: EntityNodeResponse) => void;
 }
 
 // Map entity types to colors
@@ -23,6 +27,8 @@ const ENTITY_TYPE_COLORS: Record<string, string> = {
   event: "#EF4444",
   product: "#8B5CF6",
   concept: "#EC4899",
+  technology: "#06B6D4",
+  org: "#10B981",
 };
 
 function getEntityColor(type: string): string {
@@ -30,7 +36,7 @@ function getEntityColor(type: string): string {
 }
 
 export function EntityNetwork({
-  entities,
+  graph,
   onEntityClick,
 }: EntityNetworkProps) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -40,8 +46,11 @@ export function EntityNetwork({
   const [tooltip, setTooltip] = useState<{
     x: number;
     y: number;
-    entity: EntityResponse;
+    entity: EntityNodeResponse;
+    connections: number;
   } | null>(null);
+
+  const { entities, edges } = graph;
 
   // Discover entity types
   const entityTypes = useMemo(() => {
@@ -50,14 +59,27 @@ export function EntityNetwork({
     return Array.from(types).sort();
   }, [entities]);
 
-  // Filter entities
-  const filteredEntities = useMemo(
-    () =>
-      filterType
-        ? entities.filter((e) => e.type === filterType)
-        : entities,
-    [entities, filterType]
-  );
+  // Filter entities and edges by type
+  const { filteredEntities, filteredEdges } = useMemo(() => {
+    const ents = filterType
+      ? entities.filter((e) => e.type === filterType)
+      : entities;
+    const entIds = new Set(ents.map((e) => e.id));
+    const edgs = edges.filter(
+      (e) => entIds.has(e.source) && entIds.has(e.target)
+    );
+    return { filteredEntities: ents, filteredEdges: edgs };
+  }, [entities, edges, filterType]);
+
+  // Count connections per entity for tooltip
+  const connectionCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const e of filteredEdges) {
+      counts.set(e.source, (counts.get(e.source) || 0) + 1);
+      counts.set(e.target, (counts.get(e.target) || 0) + 1);
+    }
+    return counts;
+  }, [filteredEdges]);
 
   // Responsive sizing
   useEffect(() => {
@@ -77,7 +99,7 @@ export function EntityNetwork({
   }, []);
 
   const handleEntityClick = useCallback(
-    (entity: EntityResponse) => {
+    (entity: EntityNodeResponse) => {
       onEntityClick?.(entity);
     },
     [onEntityClick]
@@ -90,60 +112,49 @@ export function EntityNetwork({
 
     const { width, height } = dimensions;
 
-    // Build nodes - group by name to get rough article counts
-    const entityMap = new Map<string, { entity: EntityResponse; count: number }>();
-    for (const e of filteredEntities) {
-      const existing = entityMap.get(e.name);
-      if (existing) {
-        existing.count++;
-      } else {
-        entityMap.set(e.name, { entity: e, count: 1 });
-      }
-    }
-
+    // Build nodes
+    const maxCount = Math.max(
+      ...filteredEntities.map((e) => e.article_count),
+      1
+    );
     const nodeScale = d3
       .scaleSqrt()
-      .domain([1, Math.max(...Array.from(entityMap.values()).map((v) => v.count), 1)])
+      .domain([1, maxCount])
       .range([8, 30])
       .clamp(true);
 
-    const nodes: NetworkNode[] = Array.from(entityMap.entries()).map(
-      ([name, { entity, count }]) => ({
-        id: entity.id,
-        name,
-        type: entity.type,
-        articleCount: count,
-        radius: nodeScale(count),
-      })
-    );
+    const nodes: NetworkNode[] = filteredEntities.map((e) => ({
+      id: e.id,
+      name: e.name,
+      type: e.type,
+      articleCount: e.article_count,
+      radius: nodeScale(e.article_count),
+    }));
 
-    // Build co-occurrence links: entities that share a topic_id
-    const topicGroups = new Map<string, string[]>();
-    for (const e of filteredEntities) {
-      const group = topicGroups.get(e.topic_id) || [];
-      group.push(e.id);
-      topicGroups.set(e.topic_id, group);
-    }
-
-    const linkMap = new Map<string, number>();
-    Array.from(topicGroups.values()).forEach((group) => {
-      const uniqueIds = Array.from(new Set(group));
-      for (let i = 0; i < uniqueIds.length; i++) {
-        for (let j = i + 1; j < uniqueIds.length; j++) {
-          const key = [uniqueIds[i], uniqueIds[j]].sort().join("-");
-          linkMap.set(key, (linkMap.get(key) || 0) + 1);
-        }
-      }
-    });
-
+    // Build links from server-computed co-occurrence edges
     const nodeIdSet = new Set(nodes.map((n) => n.id));
-    const links: NetworkLink[] = [];
-    Array.from(linkMap.entries()).forEach(([key, count]) => {
-      const [source, target] = key.split("-");
-      if (nodeIdSet.has(source) && nodeIdSet.has(target)) {
-        links.push({ source, target, sharedCount: count });
-      }
-    });
+    const maxWeight = Math.max(...filteredEdges.map((e) => e.weight), 1);
+    const links: NetworkLink[] = filteredEdges
+      .filter((e) => nodeIdSet.has(e.source) && nodeIdSet.has(e.target))
+      .map((e) => ({
+        source: e.source,
+        target: e.target,
+        sharedCount: e.weight,
+      }));
+
+    // Edge width scale
+    const widthScale = d3
+      .scaleLinear()
+      .domain([1, maxWeight])
+      .range([1, 5])
+      .clamp(true);
+
+    // Edge opacity scale
+    const opacityScale = d3
+      .scaleLinear()
+      .domain([1, maxWeight])
+      .range([0.3, 0.8])
+      .clamp(true);
 
     // Build D3 scene
     const svgSelection = d3.select(svg);
@@ -165,9 +176,9 @@ export function EntityNetwork({
       .selectAll<SVGLineElement, NetworkLink>("line")
       .data(links)
       .join("line")
-      .attr("stroke", "#2a2d3e")
-      .attr("stroke-width", (d) => Math.min(d.sharedCount, 4))
-      .attr("stroke-opacity", 0.5);
+      .attr("stroke", "#4a5568")
+      .attr("stroke-width", (d) => widthScale(d.sharedCount))
+      .attr("stroke-opacity", (d) => opacityScale(d.sharedCount));
 
     // Node groups
     const nodeGroups = g
@@ -207,7 +218,7 @@ export function EntityNetwork({
       .attr("stroke-width", 1.5)
       .attr("stroke-opacity", 0.9);
 
-    // Labels
+    // Labels (only for nodes with enough room)
     nodeGroups
       .append("text")
       .attr("text-anchor", "middle")
@@ -240,7 +251,7 @@ export function EntityNetwork({
               typeof l.target === "object"
                 ? (l.target as NetworkNode).id
                 : l.target;
-            return src === d.id || tgt === d.id ? 0.9 : 0.15;
+            return src === d.id || tgt === d.id ? 0.9 : 0.08;
           })
           .attr("stroke", (l) => {
             const src =
@@ -253,8 +264,38 @@ export function EntityNetwork({
                 : l.target;
             return src === d.id || tgt === d.id
               ? getEntityColor(d.type)
-              : "#2a2d3e";
+              : "#4a5568";
           });
+
+        // Dim unconnected nodes
+        const connectedIds = new Set<string>();
+        connectedIds.add(d.id);
+        links.forEach((l) => {
+          const src =
+            typeof l.source === "object"
+              ? (l.source as NetworkNode).id
+              : l.source;
+          const tgt =
+            typeof l.target === "object"
+              ? (l.target as NetworkNode).id
+              : l.target;
+          if (src === d.id) connectedIds.add(tgt);
+          if (tgt === d.id) connectedIds.add(src);
+        });
+        nodeGroups
+          .select("circle")
+          .transition()
+          .duration(150)
+          .attr("fill-opacity", (n: NetworkNode) =>
+            connectedIds.has(n.id) ? 0.95 : 0.15
+          );
+        nodeGroups
+          .select("text")
+          .transition()
+          .duration(150)
+          .attr("fill-opacity", (n: NetworkNode) =>
+            connectedIds.has(n.id) ? 1 : 0.2
+          );
 
         const entity = filteredEntities.find((e) => e.id === d.id);
         if (entity) {
@@ -263,6 +304,7 @@ export function EntityNetwork({
             x: event.clientX - rect.left,
             y: event.clientY - rect.top - 10,
             entity,
+            connections: connectionCounts.get(d.id) || 0,
           });
         }
       })
@@ -285,7 +327,19 @@ export function EntityNetwork({
           .duration(150)
           .attr("fill-opacity", 0.7)
           .attr("stroke-width", 1.5);
-        linkSelection.attr("stroke-opacity", 0.5).attr("stroke", "#2a2d3e");
+        linkSelection
+          .attr("stroke-opacity", (d) => opacityScale(d.sharedCount))
+          .attr("stroke", "#4a5568");
+        nodeGroups
+          .select("circle")
+          .transition()
+          .duration(150)
+          .attr("fill-opacity", 0.7);
+        nodeGroups
+          .select("text")
+          .transition()
+          .duration(150)
+          .attr("fill-opacity", 1);
         setTooltip(null);
       })
       .on("click", function (_event: MouseEvent, d: NetworkNode) {
@@ -308,7 +362,7 @@ export function EntityNetwork({
     return () => {
       simulation.stop();
     };
-  }, [filteredEntities, dimensions, handleEntityClick]);
+  }, [filteredEntities, filteredEdges, dimensions, handleEntityClick, connectionCounts]);
 
   if (entities.length === 0) {
     return (
@@ -365,6 +419,12 @@ export function EntityNetwork({
               {type}
             </div>
           ))}
+        {edges.length > 0 && (
+          <div className="flex items-center gap-1.5 text-xs text-gray-500">
+            <div className="w-4 h-0.5 bg-gray-500 rounded" />
+            co-occurrence
+          </div>
+        )}
       </div>
 
       <svg
@@ -389,6 +449,14 @@ export function EntityNetwork({
           <p className="text-xs text-gray-400 mt-0.5">
             Type: {tooltip.entity.type}
           </p>
+          <p className="text-xs text-gray-400">
+            Articles: {tooltip.entity.article_count}
+          </p>
+          {tooltip.connections > 0 && (
+            <p className="text-xs text-gray-400">
+              Connections: {tooltip.connections}
+            </p>
+          )}
         </div>
       )}
     </div>

@@ -49,6 +49,14 @@ async def create_topic(
     )
     db.add(topic)
     await db.flush()
+
+    # Dispatch LLM query generation → which then triggers SearXNG searches
+    from app.celery_client import celery_app
+    celery_app.send_task(
+        "generate_search_queries",
+        args=[str(user.id), str(topic.id)],
+    )
+
     return topic
 
 

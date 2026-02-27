@@ -17,14 +17,14 @@ import {
   getTopicClusters,
   getTopicBriefings,
   getTopicArticles,
-  getTopicEntities,
+  getEntityGraph,
   getSentimentHistory,
 } from "@/lib/api-client";
 import type {
   ClusterResponse,
   BriefingResponse,
   ArticleResponse,
-  EntityResponse,
+  EntityGraphResponse,
   SentimentPointResponse,
   WSMessage,
 } from "@/lib/types";
@@ -63,7 +63,7 @@ export default function TopicPage() {
   const [clusters, setClusters] = useState<ClusterResponse[]>([]);
   const [briefings, setBriefings] = useState<BriefingResponse[]>([]);
   const [articles, setArticles] = useState<ArticleResponse[]>([]);
-  const [entities, setEntities] = useState<EntityResponse[]>([]);
+  const [entityGraph, setEntityGraph] = useState<EntityGraphResponse | null>(null);
   const [sentimentData, setSentimentData] = useState<SentimentPointResponse[]>([]);
 
   // Cluster detail panel
@@ -119,8 +119,8 @@ export default function TopicPage() {
         })
         .catch(() => {});
     }
-    if (activeTab === "entities" && entities.length === 0) {
-      getTopicEntities(topicId).then(setEntities).catch(() => {});
+    if (activeTab === "entities" && !entityGraph) {
+      getEntityGraph(topicId).then(setEntityGraph).catch(() => {});
     }
     if (activeTab === "sentiment" && sentimentData.length === 0) {
       getSentimentHistory(topicId).then(setSentimentData).catch(() => {});
@@ -157,7 +157,7 @@ export default function TopicPage() {
         .catch(() => {});
     }
     if (activeTab === "entities") {
-      getTopicEntities(topicId).then(setEntities).catch(() => {});
+      getEntityGraph(topicId).then(setEntityGraph).catch(() => {});
     }
     if (activeTab === "sentiment") {
       getSentimentHistory(topicId).then(setSentimentData).catch(() => {});
@@ -403,7 +403,9 @@ export default function TopicPage() {
               <h3 className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-3">
                 Entity Network
               </h3>
-              <EntityNetwork entities={entities} />
+              <EntityNetwork
+                graph={entityGraph || { entities: [], edges: [] }}
+              />
             </div>
           )}
 

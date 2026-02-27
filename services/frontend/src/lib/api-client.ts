@@ -15,6 +15,7 @@ import type {
   ArticleDetailResponse,
   BriefingResponse,
   EntityResponse,
+  EntityGraphResponse,
   SentimentPointResponse,
   SourceResponse,
   SavedQueryResponse,
@@ -256,6 +257,15 @@ export async function getTopicEntities(
   const { data } = await api.get<EntityResponse[]>(
     `/api/topics/${topicId}/entities`,
     { params: type ? { type } : undefined }
+  );
+  return data;
+}
+
+export async function getEntityGraph(
+  topicId: string
+): Promise<EntityGraphResponse> {
+  const { data } = await api.get<EntityGraphResponse>(
+    `/api/topics/${topicId}/entity-graph`
   );
   return data;
 }

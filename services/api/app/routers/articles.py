@@ -26,10 +26,16 @@ async def list_topic_articles(
     is_duplicate: bool | None = Query(default=None),
     published_after: datetime | None = Query(default=None),
     published_before: datetime | None = Query(default=None),
+    min_relevance: float | None = Query(default=0.3, ge=0.0, le=1.0),
     limit: int = Query(default=50, le=200),
     offset: int = Query(default=0, ge=0),
 ):
-    """List articles for a topic with optional filters."""
+    """List articles for a topic with optional filters.
+
+    By default, filters out articles with relevance_score < 0.3 (irrelevant content).
+    Pass min_relevance=0 to see all articles regardless of relevance.
+    Articles that haven't been scored yet (relevance_score IS NULL) are always included.
+    """
     stmt = select(Article).where(
         Article.topic_id == topic_id,
         Article.user_id == user.id,
@@ -42,6 +48,12 @@ async def list_topic_articles(
         stmt = stmt.where(Article.published_at >= published_after)
     if published_before is not None:
         stmt = stmt.where(Article.published_at <= published_before)
+    if min_relevance is not None and min_relevance > 0:
+        from sqlalchemy import or_
+        stmt = stmt.where(or_(
+            Article.relevance_score.is_(None),
+            Article.relevance_score >= min_relevance,
+        ))
 
     stmt = stmt.order_by(Article.ingested_at.desc()).offset(offset).limit(limit)
     result = await db.execute(stmt)

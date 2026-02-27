@@ -1,6 +1,6 @@
 # Makefile — common TTwatch operations
 
-.PHONY: dev prod gpu lan cloud stop logs backup restore migrate
+.PHONY: dev prod gpu lan cloud stop logs backup restore migrate cleanup-data cleanup-data-dry
 
 # === Development ===
 dev:
@@ -71,3 +71,9 @@ create-admin:
 
 seed-topics:
 	docker compose exec api python scripts/seed-topics.py
+
+cleanup-data:
+	docker compose exec api python scripts/cleanup_bad_data.py
+
+cleanup-data-dry:
+	docker compose exec api python scripts/cleanup_bad_data.py --dry-run
