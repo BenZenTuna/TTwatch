@@ -3,12 +3,12 @@ import logging
 from sqlalchemy import select, text
 from worker.celeryconfig import app
 from worker.rls import with_rls_context
-from worker.llm_sync import create_fast_client
+from worker.llm_router import get_llm_for_task
 from app.models import Entity, TickerReference, AssetMapping
 
 logger = logging.getLogger(__name__)
 
-_llm = create_fast_client()
+TASK_CATEGORY = "ticker_resolution"
 
 # Fast first-pass: common entity name → ticker mappings
 _COMMON_TICKERS = {
@@ -122,8 +122,9 @@ def resolve_entity_ticker(user_id: str, entity_id: str, topic_id: str, session=N
         )
         return
 
-    # Step 3: LLM resolution (fast model)
-    result = _llm.generate_json([
+    # Step 3: LLM resolution
+    llm = get_llm_for_task(session, user_id, TASK_CATEGORY)
+    result = llm.generate_json([
         {"role": "system", "content": (
             "Given the entity name, determine if it corresponds to a publicly "
             "traded stock, ETF, or cryptocurrency. "

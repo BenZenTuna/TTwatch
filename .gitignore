@@ -3,8 +3,8 @@
 .env.local
 
 # Models (downloaded separately)
-models/
-!models/.gitkeep
+/models/
+!/models/.gitkeep
 
 # Backups
 backups/

@@ -149,7 +149,7 @@ from fastapi import Depends
 
 from app.routers import health, topics, clusters, articles, search, briefings
 from app.routers import entities, sentiment, sources, queries, investment, market_data
-from app.routers import users, admin
+from app.routers import users, admin, models
 from app.auth.router import router as auth_router
 from app.deps import rate_limit_dependency
 
@@ -173,6 +173,7 @@ app.include_router(queries.router, prefix="/api", tags=["queries"], dependencies
 app.include_router(investment.router, prefix="/api", tags=["investment"], dependencies=_rate_limited)
 app.include_router(market_data.router, prefix="/api", tags=["market_data"], dependencies=_rate_limited)
 app.include_router(admin.router, prefix="/api/admin", tags=["admin"], dependencies=_rate_limited)
+app.include_router(models.router, prefix="/api", tags=["models"], dependencies=_rate_limited)
 
 
 # === WebSocket endpoint for real-time dashboard updates ===

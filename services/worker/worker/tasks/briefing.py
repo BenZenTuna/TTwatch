@@ -6,12 +6,12 @@ from sqlalchemy import select
 
 from worker.celeryconfig import app
 from worker.rls import with_rls_context
-from worker.llm_sync import SyncLLMClient
+from worker.llm_router import get_llm_for_task
 from app.models import Article, Cluster, Briefing, Entity
 
 logger = logging.getLogger(__name__)
 
-_llm = SyncLLMClient()
+TASK_CATEGORY = "briefing"
 
 
 @app.task(name="generate_briefing", max_retries=2, default_retry_delay=60)
@@ -72,7 +72,8 @@ def generate_briefing(user_id: str, topic_id: str, session=None):
     ).all()
     new_entity_list = [{"name": e[0], "type": e[1]} for e in new_entities]
 
-    result = _llm.generate_json([
+    llm = get_llm_for_task(session, user_id, TASK_CATEGORY)
+    result = llm.generate_json([
         {"role": "system", "content": (
             "You are an intelligence analyst. Generate a briefing from these cluster summaries. "
             "Return JSON: {\"summary\": \"2-3 paragraph executive summary\", "
@@ -89,7 +90,7 @@ def generate_briefing(user_id: str, topic_id: str, session=None):
         highlights=result.get("highlights", []),
         new_entities=new_entity_list,
         watch_items=result.get("watch_items", []),
-        model_used=_llm.model,
+        model_used=llm.model,
     )
     session.add(briefing)
 

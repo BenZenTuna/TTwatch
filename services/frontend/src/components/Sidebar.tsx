@@ -7,6 +7,7 @@ import {
   Newspaper,
   TrendingUp,
   Search,
+  Cpu,
   Settings,
   LogOut,
   Plus,
@@ -108,6 +109,7 @@ export function Sidebar({ wsConnected, lastWsMessage }: SidebarProps) {
     { href: "/dashboard/articles", icon: Newspaper, label: "Articles" },
     { href: "/dashboard/investment", icon: TrendingUp, label: "Investment" },
     { href: "/dashboard/search", icon: Search, label: "Search" },
+    { href: "/dashboard/models", icon: Cpu, label: "AI Models" },
   ];
 
   return (

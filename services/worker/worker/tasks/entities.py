@@ -5,13 +5,13 @@ from sqlalchemy import select
 
 from worker.celeryconfig import app
 from worker.rls import with_rls_context
-from worker.llm_sync import create_fast_client
+from worker.llm_router import get_llm_for_task
 from worker.tasks.utils import fetch_article_text
 from app.models import Article, Entity, EntityArticleMap
 
 logger = logging.getLogger(__name__)
 
-_llm = create_fast_client()
+TASK_CATEGORY = "entity_extraction"
 
 
 @app.task(name="extract_entities", max_retries=3, default_retry_delay=30)
@@ -30,7 +30,8 @@ def extract_entities(user_id: str, article_id: str, session=None):
 
     raw_text = fetch_article_text(article.raw_storage_key)
 
-    result = _llm.generate_json([
+    llm = get_llm_for_task(session, user_id, TASK_CATEGORY)
+    result = llm.generate_json([
         {"role": "system", "content": (
             "Extract named entities from the article. Return JSON: "
             '{"entities": [{"name": "...", "type": "person|org|product|location|event|technology"}]}. '

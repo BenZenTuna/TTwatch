@@ -5,12 +5,12 @@ from sqlalchemy import select
 
 from worker.celeryconfig import app
 from worker.rls import with_rls_context
-from worker.llm_sync import SyncLLMClient
+from worker.llm_router import get_llm_for_task
 from app.models import Topic
 
 logger = logging.getLogger(__name__)
 
-_llm = SyncLLMClient()
+TASK_CATEGORY = "search_planning"
 
 _SYSTEM_PROMPT = (
     "You are a search query optimizer. Given a user's natural-language topic description, "
@@ -44,7 +44,8 @@ def generate_search_queries(user_id: str, topic_id: str, session=None):
         logger.warning(f"Topic {topic_id} not found for user {user_id}")
         return {"status": "topic_not_found"}
 
-    result = _llm.generate_json([
+    llm = get_llm_for_task(session, user_id, TASK_CATEGORY)
+    result = llm.generate_json([
         {"role": "system", "content": _SYSTEM_PROMPT},
         {"role": "user", "content": f"Topic: {topic.name}"},
     ], max_tokens=512)

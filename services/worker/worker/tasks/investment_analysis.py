@@ -3,7 +3,7 @@ import logging
 from sqlalchemy import select
 from worker.celeryconfig import app
 from worker.rls import with_rls_context
-from worker.llm_sync import SyncLLMClient
+from worker.llm_router import get_llm_for_task
 from app.models import (
     AssetMapping, Article, Entity, EntityArticleMap,
     MarketDataCache, InvestmentAnalysis,
@@ -11,7 +11,7 @@ from app.models import (
 
 logger = logging.getLogger(__name__)
 
-_llm = SyncLLMClient()
+TASK_CATEGORY = "investment_analysis"
 
 
 @app.task(name="generate_investment_analyses", max_retries=2, default_retry_delay=60)
@@ -23,6 +23,8 @@ def generate_investment_analyses(user_id: str, topic_id: str, session=None):
     mentioning that entity, fetches latest market data, and generates
     an LLM-powered analysis with sentiment and key signals.
     """
+    llm = get_llm_for_task(session, user_id, TASK_CATEGORY)
+
     mappings = session.execute(
         select(AssetMapping).where(
             AssetMapping.topic_id == topic_id,
@@ -66,7 +68,7 @@ def generate_investment_analyses(user_id: str, topic_id: str, session=None):
                 f"Market Cap: {market_data.market_cap}"
             )
 
-        result = _llm.generate_json([
+        result = llm.generate_json([
             {"role": "system", "content": (
                 "You are a financial analyst. Analyze the news sentiment and market data "
                 "for this asset. Return JSON: {\"analysis\": \"2-3 paragraph analysis\", "
@@ -98,7 +100,7 @@ def generate_investment_analyses(user_id: str, topic_id: str, session=None):
             articles_considered=len(article_summaries),
             market_data_cache_id=market_data.id if market_data else None,
             sentiment_score=avg_sentiment,
-            model_used=_llm.model,
+            model_used=llm.model,
         )
         session.add(analysis)
 

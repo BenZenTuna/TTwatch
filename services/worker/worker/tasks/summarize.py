@@ -9,7 +9,7 @@ from sqlalchemy import select, or_
 from worker.celeryconfig import app
 from worker.rls import with_rls_context
 from worker.db import db_session
-from worker.llm_sync import create_fast_client
+from worker.llm_router import get_llm_for_task
 from worker.tasks.utils import fetch_article_text
 from app.models import Article
 
@@ -19,7 +19,7 @@ _cache_redis = redis_lib.from_url(
 
 logger = logging.getLogger(__name__)
 
-_llm = create_fast_client()
+TASK_CATEGORY = "summarization"
 
 _SYSTEM_PROMPT = (
     "Summarize this article in exactly two sentences. "
@@ -95,7 +95,8 @@ def summarize_article(user_id: str, article_id: str, session=None):
 
     raw_text = fetch_article_text(article.raw_storage_key)
 
-    summary = _llm.generate([
+    llm = get_llm_for_task(session, user_id, TASK_CATEGORY)
+    summary = llm.generate([
         {"role": "system", "content": _SYSTEM_PROMPT},
         {"role": "user", "content": f"Title: {article.title}\nText: {raw_text[:2000]}"},
     ], max_tokens=150)

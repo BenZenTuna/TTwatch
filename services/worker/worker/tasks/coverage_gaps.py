@@ -5,12 +5,12 @@ from sqlalchemy import select
 
 from worker.celeryconfig import app
 from worker.rls import with_rls_context
-from worker.llm_sync import SyncLLMClient
+from worker.llm_router import get_llm_for_task
 from app.models import Cluster, Briefing, Topic
 
 logger = logging.getLogger(__name__)
 
-_llm = SyncLLMClient()
+TASK_CATEGORY = "coverage_gaps"
 
 
 @app.task(name="detect_coverage_gaps", max_retries=2, default_retry_delay=60)
@@ -38,7 +38,8 @@ def detect_coverage_gaps(user_id: str, topic_id: str, session=None):
     ).scalar_one_or_none()
     topic_name = topic or "this topic"
 
-    result = _llm.generate_json([
+    llm = get_llm_for_task(session, user_id, TASK_CATEGORY)
+    result = llm.generate_json([
         {"role": "system", "content": (
             "You are an intelligence analyst. Given the currently covered subtopics, "
             "identify 3-5 important areas that are NOT being covered but SHOULD be "

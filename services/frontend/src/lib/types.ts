@@ -248,6 +248,40 @@ export interface SearchResult {
   score: number;
 }
 
+// Model management
+export interface ModelInfo {
+  id: string;
+  name: string;
+  url: string;
+  status: "online" | "offline" | "loading";
+  type: string;
+  description: string;
+}
+
+export interface ModelStatusResponse {
+  models: ModelInfo[];
+  gpu_mode: string;
+  provider: string;
+}
+
+export interface TaskRoutingEntry {
+  task_category: string;
+  display_name: string;
+  description: string;
+  model_target: "primary" | "fast" | "auto";
+  is_default: boolean;
+  recommend_primary: boolean;
+}
+
+export interface TaskRoutingResponse {
+  routing: TaskRoutingEntry[];
+}
+
+export interface TaskRoutingChange {
+  task_category: string;
+  model_target: "primary" | "fast" | "auto";
+}
+
 // Processing status
 export interface ProcessingStatusResponse {
   phase: "ingesting" | "processing" | "clustering" | "complete" | "idle";

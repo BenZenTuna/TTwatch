@@ -32,6 +32,9 @@ import type {
   SearchResult,
   SearchStatusResponse,
   ProcessingStatusResponse,
+  ModelStatusResponse,
+  TaskRoutingResponse,
+  TaskRoutingChange,
 } from "./types";
 
 // SSR-safe base URL: Docker-internal on server, public on client
@@ -438,6 +441,28 @@ export async function verifyAssetMapping(mappingId: string): Promise<void> {
 
 export async function rejectAssetMapping(mappingId: string): Promise<void> {
   await api.post(`/api/asset-mappings/${mappingId}/reject`);
+}
+
+// ── Models ──
+
+export async function getModelStatus(): Promise<ModelStatusResponse> {
+  const { data } = await api.get<ModelStatusResponse>("/api/models/status");
+  return data;
+}
+
+export async function getTaskRouting(): Promise<TaskRoutingResponse> {
+  const { data } = await api.get<TaskRoutingResponse>("/api/models/task-routing");
+  return data;
+}
+
+export async function updateTaskRouting(
+  changes: TaskRoutingChange[]
+): Promise<TaskRoutingResponse> {
+  const { data } = await api.put<TaskRoutingResponse>(
+    "/api/models/task-routing",
+    { changes }
+  );
+  return data;
 }
 
 // ── Admin ──
