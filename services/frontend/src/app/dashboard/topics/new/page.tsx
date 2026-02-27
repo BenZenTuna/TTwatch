@@ -95,7 +95,7 @@ export default function NewTopicPage() {
             autoFocus
           />
           <p className="text-xs text-gray-600 mt-1">
-            The topic name is also used as a search query
+            The system will auto-generate optimized search queries from this name using AI
           </p>
         </div>
 
@@ -138,7 +138,8 @@ export default function NewTopicPage() {
             Additional Search Terms
           </label>
           <p className="text-xs text-gray-600 mb-2">
-            Extra queries to broaden article discovery beyond the topic name
+            Optional extra queries to broaden article discovery. The system also auto-generates
+            queries from the topic name — you can view and edit all queries later on the topic page.
           </p>
           <div className="space-y-2">
             {searchTerms.map((term, i) => (

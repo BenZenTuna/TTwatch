@@ -12,6 +12,12 @@ import {
   Bell,
   Search,
   AlertCircle,
+  ChevronDown,
+  ChevronRight,
+  X,
+  Plus,
+  Save,
+  RotateCcw,
 } from "lucide-react";
 import { useAppStore } from "@/lib/store";
 import { useWebSocket } from "@/hooks/useWebSocket";
@@ -24,6 +30,8 @@ import {
   triggerTopicSearch,
   getTopicSearchStatus,
   getProcessingStatus,
+  updateTopic,
+  getTopics,
 } from "@/lib/api-client";
 import type {
   ClusterResponse,
@@ -59,7 +67,7 @@ export default function TopicPage() {
   const params = useParams();
   const topicId = params.id as string;
 
-  const { topics, selectTopic } = useAppStore();
+  const { topics, selectTopic, setTopics } = useAppStore();
   const topic = topics.find((t) => t.id === topicId);
 
   const [activeTab, setActiveTab] = useState<Tab>("overview");
@@ -275,6 +283,94 @@ export default function TopicPage() {
     getTopicBriefings(topicId).then(setBriefings).catch(() => {});
   }, [topicId]);
 
+  // ── Search Queries state ──
+  const searchQueries: string[] = (topic?.config?.search_queries as string[]) || [];
+  const searchTerms: string[] = (topic?.config?.search_terms as string[]) || [];
+  const hasQueries = searchQueries.length > 0 || searchTerms.length > 0;
+  const [queriesExpanded, setQueriesExpanded] = useState(hasQueries);
+  const [editedQueries, setEditedQueries] = useState<string[] | null>(null);
+  const [editedTerms, setEditedTerms] = useState<string[] | null>(null);
+  const [newQueryInput, setNewQueryInput] = useState("");
+  const [newTermInput, setNewTermInput] = useState("");
+  const [querySaving, setQuerySaving] = useState(false);
+  const [querySaveMsg, setQuerySaveMsg] = useState<string | null>(null);
+
+  // Derive the working copies (edited state or original)
+  const workingQueries = editedQueries ?? searchQueries;
+  const workingTerms = editedTerms ?? searchTerms;
+  const queriesChanged =
+    editedQueries !== null &&
+    JSON.stringify(editedQueries) !== JSON.stringify(searchQueries);
+  const termsChanged =
+    editedTerms !== null &&
+    JSON.stringify(editedTerms) !== JSON.stringify(searchTerms);
+  const hasUnsavedChanges = queriesChanged || termsChanged;
+
+  const handleRemoveQuery = (index: number) => {
+    const updated = [...workingQueries];
+    updated.splice(index, 1);
+    setEditedQueries(updated);
+  };
+
+  const handleAddQuery = () => {
+    const trimmed = newQueryInput.trim();
+    if (!trimmed) return;
+    setEditedQueries([...workingQueries, trimmed]);
+    setNewQueryInput("");
+  };
+
+  const handleRemoveTerm = (index: number) => {
+    const updated = [...workingTerms];
+    updated.splice(index, 1);
+    setEditedTerms(updated);
+  };
+
+  const handleAddTerm = () => {
+    const trimmed = newTermInput.trim();
+    if (!trimmed) return;
+    setEditedTerms([...workingTerms, trimmed]);
+    setNewTermInput("");
+  };
+
+  const handleSaveQueries = async () => {
+    setQuerySaving(true);
+    setQuerySaveMsg(null);
+    try {
+      const configUpdate: Record<string, unknown> = {};
+      if (editedQueries !== null) configUpdate.search_queries = editedQueries;
+      if (editedTerms !== null) configUpdate.search_terms = editedTerms;
+      await updateTopic(topicId, { config: configUpdate });
+      // Refresh topic in store
+      const updated = await getTopics();
+      setTopics(updated);
+      setEditedQueries(null);
+      setEditedTerms(null);
+      setQuerySaveMsg("Saved");
+      setTimeout(() => setQuerySaveMsg(null), 3000);
+    } catch {
+      setQuerySaveMsg("Failed to save");
+    } finally {
+      setQuerySaving(false);
+    }
+  };
+
+  const handleRegenerateQueries = async () => {
+    setSearchError(null);
+    try {
+      await triggerTopicSearch(topicId);
+      setSearchStatus({ status: "searching", started_at: new Date().toISOString() });
+      setQuerySaveMsg("Regenerating queries & searching...");
+      setTimeout(() => setQuerySaveMsg(null), 5000);
+    } catch (err: unknown) {
+      const error = err as { response?: { status?: number; data?: { detail?: string } } };
+      if (error.response?.status === 429) {
+        setSearchError(error.response.data?.detail || "Please wait before searching again.");
+      } else {
+        setSearchError("Failed to trigger regeneration.");
+      }
+    }
+  };
+
   if (!topic) {
     return (
       <div className="flex items-center justify-center h-[60vh] text-gray-500">
@@ -396,6 +492,155 @@ export default function TopicPage() {
           )}
         </div>
       )}
+
+      {/* Search Queries */}
+      <div className="card overflow-hidden">
+        <button
+          onClick={() => setQueriesExpanded(!queriesExpanded)}
+          className="w-full flex items-center justify-between px-4 py-3 hover:bg-surface-overlay transition-colors"
+        >
+          <div className="flex items-center gap-2">
+            {queriesExpanded ? (
+              <ChevronDown className="w-4 h-4 text-gray-500" />
+            ) : (
+              <ChevronRight className="w-4 h-4 text-gray-500" />
+            )}
+            <span className="text-sm font-medium text-gray-300">Search Queries</span>
+            <span className="text-xs text-gray-600">
+              {workingQueries.length} queries, {workingTerms.length} custom terms
+            </span>
+          </div>
+          {hasUnsavedChanges && (
+            <span className="text-xs text-amber-400">Unsaved changes</span>
+          )}
+        </button>
+
+        {queriesExpanded && (
+          <div className="px-4 pb-4 space-y-4 border-t border-surface-border pt-3">
+            <p className="text-xs text-gray-500">
+              These queries are used by the system to find articles every {topic.refresh_interval_minutes >= 60 ? `${topic.refresh_interval_minutes / 60} hours` : `${topic.refresh_interval_minutes} minutes`}.
+              LLM-generated queries are combined with your custom terms.
+            </p>
+
+            {/* LLM-generated queries */}
+            <div className="space-y-2">
+              <label className="text-xs font-medium text-gray-400 uppercase tracking-wider">
+                Generated Queries
+              </label>
+              {workingQueries.length === 0 ? (
+                <p className="text-xs text-gray-600 italic">
+                  No generated queries yet. Click Regenerate to create them.
+                </p>
+              ) : (
+                <div className="flex flex-wrap gap-2">
+                  {workingQueries.map((q, i) => (
+                    <span
+                      key={i}
+                      className="inline-flex items-center gap-1.5 bg-surface-overlay border border-surface-border rounded-md px-2.5 py-1 text-sm text-gray-300 group"
+                    >
+                      {q}
+                      <button
+                        onClick={() => handleRemoveQuery(i)}
+                        className="text-gray-600 hover:text-red-400 transition-colors opacity-0 group-hover:opacity-100"
+                      >
+                        <X className="w-3 h-3" />
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              )}
+              <div className="flex items-center gap-2">
+                <input
+                  type="text"
+                  value={newQueryInput}
+                  onChange={(e) => setNewQueryInput(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && (e.preventDefault(), handleAddQuery())}
+                  placeholder="Add a query..."
+                  className="input-field text-sm flex-1"
+                />
+                <button
+                  onClick={handleAddQuery}
+                  disabled={!newQueryInput.trim()}
+                  className="flex items-center gap-1 text-xs text-gray-400 hover:text-gray-200 transition-colors disabled:opacity-30 disabled:cursor-not-allowed px-2 py-1.5"
+                >
+                  <Plus className="w-3 h-3" />
+                  Add
+                </button>
+              </div>
+            </div>
+
+            {/* Custom search terms */}
+            <div className="space-y-2">
+              <label className="text-xs font-medium text-gray-400 uppercase tracking-wider">
+                Custom Search Terms
+              </label>
+              {workingTerms.length > 0 && (
+                <div className="flex flex-wrap gap-2">
+                  {workingTerms.map((t, i) => (
+                    <span
+                      key={i}
+                      className="inline-flex items-center gap-1.5 bg-accent/10 border border-accent/20 rounded-md px-2.5 py-1 text-sm text-accent group"
+                    >
+                      {t}
+                      <button
+                        onClick={() => handleRemoveTerm(i)}
+                        className="text-accent/50 hover:text-red-400 transition-colors opacity-0 group-hover:opacity-100"
+                      >
+                        <X className="w-3 h-3" />
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              )}
+              <div className="flex items-center gap-2">
+                <input
+                  type="text"
+                  value={newTermInput}
+                  onChange={(e) => setNewTermInput(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && (e.preventDefault(), handleAddTerm())}
+                  placeholder="Add a custom term..."
+                  className="input-field text-sm flex-1"
+                />
+                <button
+                  onClick={handleAddTerm}
+                  disabled={!newTermInput.trim()}
+                  className="flex items-center gap-1 text-xs text-gray-400 hover:text-gray-200 transition-colors disabled:opacity-30 disabled:cursor-not-allowed px-2 py-1.5"
+                >
+                  <Plus className="w-3 h-3" />
+                  Add
+                </button>
+              </div>
+            </div>
+
+            {/* Action buttons */}
+            <div className="flex items-center gap-2 pt-1">
+              {hasUnsavedChanges && (
+                <button
+                  onClick={handleSaveQueries}
+                  disabled={querySaving}
+                  className="flex items-center gap-1.5 bg-accent text-white px-3 py-1.5 rounded-md text-sm hover:bg-accent/90 transition-colors disabled:opacity-50"
+                >
+                  <Save className="w-3.5 h-3.5" />
+                  {querySaving ? "Saving..." : "Save"}
+                </button>
+              )}
+              <button
+                onClick={handleRegenerateQueries}
+                disabled={searchStatus.status === "searching"}
+                className="flex items-center gap-1.5 bg-surface-overlay border border-surface-border text-gray-300 px-3 py-1.5 rounded-md text-sm hover:bg-surface-raised transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                <RotateCcw className="w-3.5 h-3.5" />
+                Regenerate
+              </button>
+              {querySaveMsg && (
+                <span className={`text-xs ${querySaveMsg === "Saved" ? "text-emerald-400" : "text-red-400"}`}>
+                  {querySaveMsg}
+                </span>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
 
       {/* Tab bar */}
       <div className="flex bg-surface-raised border border-surface-border rounded-lg p-1">

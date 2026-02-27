@@ -75,6 +75,11 @@ def generate_search_queries(user_id: str, topic_id: str, session=None):
         f"Generated {len(queries)} search queries for topic '{topic.name}': {queries}"
     )
 
+    # Commit so run_topic_search can see the updated config.
+    # Without this, the session commits after this function returns,
+    # but the dispatched task runs immediately in a new session.
+    session.commit()
+
     # Dispatch the actual SearXNG searches using the generated queries
     app.send_task("run_topic_search", args=[user_id, topic_id])
 

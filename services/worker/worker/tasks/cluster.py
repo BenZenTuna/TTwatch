@@ -1,5 +1,6 @@
 """Re-cluster articles for a topic using HDBSCAN on Qdrant embeddings."""
 import os
+import re
 import logging
 
 import numpy as np
@@ -12,8 +13,64 @@ from qdrant_client.models import Filter, FieldCondition, MatchValue
 
 from worker.celeryconfig import app
 from worker.rls import with_rls_context
-from worker.llm_sync import SyncLLMClient
 from app.models import Cluster, Article
+
+
+_STOPWORDS = frozenset(
+    "a an the and or but in on at to for of is are was were be been being "
+    "by with from as it its this that these those has have had do does did "
+    "will would shall should can could may might not no so if how what when "
+    "where who which whom why all each every both few many much some any "
+    "here there about after before between into through during above below "
+    "up down out off over under again further then once re vs via new s t "
+    "your our my his her their its we you they i he she me us".split()
+)
+
+
+def _extract_label_from_titles(titles: list[str]) -> str:
+    """Extract a 2-4 word cluster label from article titles using word frequency.
+
+    Fast, deterministic alternative to LLM-based labeling. Avoids the
+    extreme latency of reasoning models (QwQ) on simple classification tasks.
+    """
+    from collections import Counter
+
+    words: list[str] = []
+    for title in titles:
+        for word in re.findall(r"[A-Za-z][A-Za-z0-9'-]*[A-Za-z0-9]|[A-Za-z]", title):
+            lower = word.lower()
+            if lower not in _STOPWORDS and len(word) > 1:
+                words.append(word)
+
+    if not words:
+        return "Uncategorized"
+
+    # Count frequencies, preferring capitalized words (proper nouns / brand names)
+    freq = Counter(words)
+    # Boost proper nouns (capitalized words that aren't start-of-title)
+    proper_nouns = Counter()
+    for title in titles:
+        title_words = re.findall(r"[A-Za-z][A-Za-z0-9'-]*[A-Za-z0-9]|[A-Za-z]", title)
+        for j, w in enumerate(title_words):
+            if j > 0 and w[0].isupper() and w.lower() not in _STOPWORDS:
+                proper_nouns[w] += 1
+
+    # Merge: proper nouns get 2x weight
+    combined: Counter = Counter()
+    for word, count in freq.items():
+        combined[word] = count + proper_nouns.get(word, 0)
+
+    # Pick top 2-3 distinct words (case-preserving, deduplicated)
+    seen_lower: set[str] = set()
+    label_parts: list[str] = []
+    for word, _ in combined.most_common(20):
+        if word.lower() not in seen_lower:
+            seen_lower.add(word.lower())
+            label_parts.append(word)
+            if len(label_parts) >= 3:
+                break
+
+    return " ".join(label_parts) if label_parts else "Uncategorized"
 
 _cache_redis = redis_lib.from_url(
     os.environ.get("REDIS_CACHE_URL", "redis://redis:6379/3")
@@ -22,7 +79,6 @@ _cache_redis = redis_lib.from_url(
 logger = logging.getLogger(__name__)
 
 qdrant_sync = QdrantClient(url=os.environ.get("QDRANT_URL", "http://qdrant:6333"))
-_llm = SyncLLMClient()
 
 CLUSTER_COLORS = [
     "#3B82F6", "#10B981", "#F59E0B", "#EF4444", "#8B5CF6",
@@ -146,11 +202,8 @@ def recluster_topic(user_id: str, topic_id: str, session=None):
         cluster_point_indices = [idx for idx, l in enumerate(labels) if l == cluster_label]
         cluster_articles = [points_with_vectors[idx] for idx in cluster_point_indices]
 
-        titles = "\n".join(p.payload.get("title", "Untitled") for p in cluster_articles[:10])
-        keyword = _llm.generate([
-            {"role": "system", "content": "Given these article titles, generate a concise 2-4 word topic label. Respond with ONLY the label."},
-            {"role": "user", "content": titles},
-        ]).strip().strip('"').strip("'")
+        title_list = [p.payload.get("title", "Untitled") for p in cluster_articles[:10]]
+        keyword = _extract_label_from_titles(title_list)
 
         article_count = len(cluster_articles)
         cluster = Cluster(

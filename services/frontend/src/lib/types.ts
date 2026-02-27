@@ -36,6 +36,13 @@ export interface TopicCreate {
   refresh_interval_minutes?: number;
 }
 
+export interface TopicUpdate {
+  name?: string;
+  icon?: string | null;
+  config?: Record<string, unknown>;
+  refresh_interval_minutes?: number;
+}
+
 export interface ClusterResponse {
   id: string;
   keyword: string;

@@ -52,9 +52,10 @@ async def create_topic(
         refresh_interval_minutes=req.refresh_interval_minutes,
     )
     db.add(topic)
-    await db.flush()
+    await db.commit()
 
-    # Dispatch LLM query generation → which then triggers SearXNG searches
+    # Dispatch LLM query generation → which then triggers SearXNG searches.
+    # Must commit first so the worker can read the topic from the database.
     from app.celery_client import celery_app
     celery_app.send_task(
         "generate_search_queries",
@@ -113,7 +114,13 @@ async def update_topic(
     # Only update fields that were explicitly included in the request body.
     # model_fields_set contains field names the client actually sent.
     for field_name in req.model_fields_set:
-        setattr(topic, field_name, getattr(req, field_name))
+        if field_name == "config" and req.config is not None:
+            # Merge config dicts so updating search_queries doesn't wipe search_terms
+            merged = dict(topic.config or {})
+            merged.update(req.config)
+            topic.config = merged
+        else:
+            setattr(topic, field_name, getattr(req, field_name))
     return topic
 
 

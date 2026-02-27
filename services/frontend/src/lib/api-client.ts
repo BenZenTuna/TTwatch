@@ -10,6 +10,7 @@ import type {
   UserResponse,
   TopicResponse,
   TopicCreate,
+  TopicUpdate,
   ClusterResponse,
   ArticleResponse,
   ArticleDetailResponse,
@@ -161,6 +162,14 @@ export async function createTopic(
   topic: TopicCreate
 ): Promise<TopicResponse> {
   const { data } = await api.post<TopicResponse>("/api/topics", topic);
+  return data;
+}
+
+export async function updateTopic(
+  topicId: string,
+  updates: TopicUpdate
+): Promise<TopicResponse> {
+  const { data } = await api.put<TopicResponse>(`/api/topics/${topicId}`, updates);
   return data;
 }
 
