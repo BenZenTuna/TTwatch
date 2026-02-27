@@ -13,6 +13,10 @@ from worker.celeryconfig import app
 from worker.rls import with_rls_context
 from app.models import Article
 
+_cache_redis = redis_lib.from_url(
+    os.environ.get("REDIS_CACHE_URL", "redis://redis:6379/3")
+)
+
 logger = logging.getLogger(__name__)
 
 # Module-level singletons — NOT created per-invocation (avoids connection
@@ -150,6 +154,15 @@ def ingest_article(self, user_id: str, topic_id: str, url: str,
     extract_entities.delay(user_id, article_id)
     classify_sentiment.delay(user_id, article_id)
     score_relevance.delay(user_id, article_id)
+
+    # Transition phase from "ingesting" to "processing" once fan-out begins
+    try:
+        proc_prefix = f"ttwatch:processing:{topic_id}"
+        current_phase = _cache_redis.get(f"{proc_prefix}:phase")
+        if current_phase and current_phase.decode() == "ingesting":
+            _cache_redis.set(f"{proc_prefix}:phase", "processing", ex=3600)
+    except Exception:
+        pass
 
     logger.info(f"Ingested article {article_id}: {title[:80]}")
     return {"status": "ingested", "article_id": article_id}

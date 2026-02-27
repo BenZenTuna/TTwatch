@@ -1,6 +1,8 @@
 """Classify article sentiment using LLM."""
 import logging
+import os
 
+import redis as redis_lib
 from sqlalchemy import select
 
 from worker.celeryconfig import app
@@ -8,6 +10,10 @@ from worker.rls import with_rls_context
 from worker.llm_sync import SyncLLMClient
 from worker.tasks.utils import fetch_article_text
 from app.models import Article
+
+_cache_redis = redis_lib.from_url(
+    os.environ.get("REDIS_CACHE_URL", "redis://redis:6379/3")
+)
 
 logger = logging.getLogger(__name__)
 
@@ -42,3 +48,11 @@ def classify_sentiment(user_id: str, article_id: str, session=None):
     article.sentiment_score = score
 
     logger.info(f"Sentiment for article {article_id}: {score:.2f}")
+
+    # Track sentiment progress
+    try:
+        key = f"ttwatch:processing:{article.topic_id}:sentiment"
+        _cache_redis.incr(key)
+        _cache_redis.expire(key, 3600)
+    except Exception:
+        pass

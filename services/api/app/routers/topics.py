@@ -197,6 +197,78 @@ async def get_topic_search_status(
     return data
 
 
+@router.get("/topics/{topic_id}/processing-status")
+async def get_processing_status(
+    topic_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get real-time processing progress for a topic.
+
+    Combines Redis counters (fast, real-time) with DB cluster count.
+    Phase transitions: ingesting → processing → clustering → complete → idle.
+    """
+    proc_prefix = f"ttwatch:processing:{topic_id}"
+
+    # Read all Redis counters in one go
+    phase_raw = await cache_redis.get(f"{proc_prefix}:phase")
+    expected_raw = await cache_redis.get(f"{proc_prefix}:expected")
+    embedded_raw = await cache_redis.get(f"{proc_prefix}:embedded")
+    summarized_raw = await cache_redis.get(f"{proc_prefix}:summarized")
+    sentiment_raw = await cache_redis.get(f"{proc_prefix}:sentiment")
+    relevance_raw = await cache_redis.get(f"{proc_prefix}:relevance")
+    cluster_count_raw = await cache_redis.get(f"{proc_prefix}:cluster_count")
+
+    phase = phase_raw.decode() if phase_raw else None
+    expected = int(expected_raw) if expected_raw else 0
+    embedded = int(embedded_raw) if embedded_raw else 0
+    summarized = int(summarized_raw) if summarized_raw else 0
+    sentiment = int(sentiment_raw) if sentiment_raw else 0
+    relevance = int(relevance_raw) if relevance_raw else 0
+    cluster_count = int(cluster_count_raw) if cluster_count_raw else 0
+
+    # If no phase in Redis, check if clusters exist (idle vs never-processed)
+    if not phase:
+        result = await db.execute(
+            select(func.count(Cluster.id)).where(
+                Cluster.topic_id == topic_id,
+                Cluster.user_id == user.id,
+            )
+        )
+        db_cluster_count = result.scalar() or 0
+        return {
+            "phase": "idle",
+            "total_articles": 0,
+            "embedded": 0,
+            "summarized": 0,
+            "sentiment": 0,
+            "relevance": 0,
+            "clustered": 1 if db_cluster_count > 0 else 0,
+            "cluster_count": db_cluster_count,
+        }
+
+    # For "complete" phase, get actual cluster count from DB if not in Redis
+    if phase == "complete" and cluster_count == 0:
+        result = await db.execute(
+            select(func.count(Cluster.id)).where(
+                Cluster.topic_id == topic_id,
+                Cluster.user_id == user.id,
+            )
+        )
+        cluster_count = result.scalar() or 0
+
+    return {
+        "phase": phase,
+        "total_articles": expected,
+        "embedded": embedded,
+        "summarized": summarized,
+        "sentiment": sentiment,
+        "relevance": relevance,
+        "clustered": 1 if phase == "complete" else 0,
+        "cluster_count": cluster_count,
+    }
+
+
 @router.get("/topics/{topic_id}/clusters", response_model=list[ClusterResponse])
 async def list_clusters(
     topic_id: uuid.UUID,

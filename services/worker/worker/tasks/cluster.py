@@ -3,6 +3,7 @@ import os
 import logging
 
 import numpy as np
+import redis as redis_lib
 from umap import UMAP
 from hdbscan import HDBSCAN
 from sqlalchemy import select, delete
@@ -13,6 +14,10 @@ from worker.celeryconfig import app
 from worker.rls import with_rls_context
 from worker.llm_sync import SyncLLMClient
 from app.models import Cluster, Article
+
+_cache_redis = redis_lib.from_url(
+    os.environ.get("REDIS_CACHE_URL", "redis://redis:6379/3")
+)
 
 logger = logging.getLogger(__name__)
 
@@ -181,3 +186,11 @@ def recluster_topic(user_id: str, topic_id: str, session=None):
         )
 
     logger.info(f"Topic {topic_id}: {len(unique_labels)} clusters from {len(selected_ids)} articles ({len(noise_ids)} noise)")
+
+    # Mark processing as complete
+    try:
+        proc_prefix = f"ttwatch:processing:{topic_id}"
+        _cache_redis.set(f"{proc_prefix}:phase", "complete", ex=3600)
+        _cache_redis.set(f"{proc_prefix}:cluster_count", len(unique_labels), ex=3600)
+    except Exception:
+        pass

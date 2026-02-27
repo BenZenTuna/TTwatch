@@ -241,6 +241,18 @@ export interface SearchResult {
   score: number;
 }
 
+// Processing status
+export interface ProcessingStatusResponse {
+  phase: "ingesting" | "processing" | "clustering" | "complete" | "idle";
+  total_articles: number;
+  embedded: number;
+  summarized: number;
+  sentiment: number;
+  relevance: number;
+  clustered: number;
+  cluster_count: number;
+}
+
 // Search status
 export interface SearchStatusResponse {
   status: "idle" | "searching" | "completed" | "error";

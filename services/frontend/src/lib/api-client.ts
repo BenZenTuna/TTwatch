@@ -30,6 +30,7 @@ import type {
   AssetMappingResponse,
   SearchResult,
   SearchStatusResponse,
+  ProcessingStatusResponse,
 } from "./types";
 
 // SSR-safe base URL: Docker-internal on server, public on client
@@ -174,6 +175,11 @@ export async function triggerTopicSearch(topicId: string) {
 
 export async function getTopicSearchStatus(topicId: string): Promise<SearchStatusResponse> {
   const { data } = await api.get<SearchStatusResponse>(`/api/topics/${topicId}/search-status`);
+  return data;
+}
+
+export async function getProcessingStatus(topicId: string): Promise<ProcessingStatusResponse> {
+  const { data } = await api.get<ProcessingStatusResponse>(`/api/topics/${topicId}/processing-status`);
   return data;
 }
 

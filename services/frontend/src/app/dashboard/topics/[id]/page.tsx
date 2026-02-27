@@ -23,6 +23,7 @@ import {
   getSentimentHistory,
   triggerTopicSearch,
   getTopicSearchStatus,
+  getProcessingStatus,
 } from "@/lib/api-client";
 import type {
   ClusterResponse,
@@ -31,6 +32,7 @@ import type {
   EntityGraphResponse,
   SentimentPointResponse,
   SearchStatusResponse,
+  ProcessingStatusResponse,
   WSMessage,
 } from "@/lib/types";
 import { BubbleCluster } from "@/components/BubbleCluster";
@@ -77,6 +79,9 @@ export default function TopicPage() {
   const [completedMessage, setCompletedMessage] = useState<string | null>(null);
   const completedTimerRef = useRef<ReturnType<typeof setTimeout>>();
 
+  // Processing progress
+  const [processingStatus, setProcessingStatus] = useState<ProcessingStatusResponse | null>(null);
+
   // Cluster detail panel
   const [selectedCluster, setSelectedCluster] = useState<ClusterResponse | null>(null);
 
@@ -101,6 +106,8 @@ export default function TopicPage() {
       clearTimeout(completedTimerRef.current);
       completedTimerRef.current = setTimeout(() => setCompletedMessage(null), 5000);
       setSearchJustCompleted(true);
+      // Kick off processing status polling
+      getProcessingStatus(topicId).then(setProcessingStatus).catch(() => {});
       return;
     }
     if (msg.type !== "connected" && msg.type !== "ping") {
@@ -159,6 +166,32 @@ export default function TopicPage() {
     }, 5000);
     return () => clearInterval(interval);
   }, [searchStatus.status, topicId, loadCoreData]);
+
+  // Poll processing status
+  useEffect(() => {
+    getProcessingStatus(topicId).then(setProcessingStatus).catch(() => {});
+  }, [topicId]);
+
+  useEffect(() => {
+    if (!processingStatus) return;
+    const { phase } = processingStatus;
+    if (phase === "idle" || phase === "complete") {
+      // On completion, refresh clusters and stop polling
+      if (phase === "complete") {
+        loadCoreData();
+      }
+      return;
+    }
+    const interval = setInterval(() => {
+      getProcessingStatus(topicId).then((s) => {
+        setProcessingStatus(s);
+        if (s.phase === "complete") {
+          loadCoreData();
+        }
+      }).catch(() => {});
+    }, 5000);
+    return () => clearInterval(interval);
+  }, [processingStatus?.phase, topicId, loadCoreData]);
 
   // Cleanup completed message timer
   useEffect(() => {
@@ -316,6 +349,51 @@ export default function TopicPage() {
         <div className="flex items-center gap-2 text-sm text-amber-400 bg-amber-400/5 border border-amber-400/20 rounded-lg px-4 py-2">
           <AlertCircle className="w-3.5 h-3.5" />
           {searchError}
+        </div>
+      )}
+
+      {/* Processing progress */}
+      {processingStatus && processingStatus.phase !== "idle" && processingStatus.phase !== "complete" && (
+        <div className="card p-4 space-y-3">
+          <div className="flex items-center gap-2">
+            <div className="w-2 h-2 bg-accent rounded-full animate-pulse" />
+            <span className="text-sm font-medium text-gray-200">
+              {processingStatus.phase === "ingesting" && "Fetching articles..."}
+              {processingStatus.phase === "processing" && "Analyzing articles..."}
+              {processingStatus.phase === "clustering" && "Building clusters..."}
+            </span>
+            {processingStatus.total_articles > 0 && (
+              <span className="text-xs text-gray-500 ml-auto">
+                {processingStatus.total_articles} articles dispatched
+              </span>
+            )}
+          </div>
+          {processingStatus.total_articles > 0 && processingStatus.phase !== "ingesting" && (
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              {([
+                { label: "Embedded", value: processingStatus.embedded },
+                { label: "Summarized", value: processingStatus.summarized },
+                { label: "Sentiment", value: processingStatus.sentiment },
+                { label: "Relevance", value: processingStatus.relevance },
+              ] as const).map(({ label, value }) => {
+                const pct = Math.min(100, Math.round((value / processingStatus.total_articles) * 100));
+                return (
+                  <div key={label} className="space-y-1">
+                    <div className="flex justify-between text-xs">
+                      <span className="text-gray-400">{label}</span>
+                      <span className="text-gray-500">{value}/{processingStatus.total_articles}</span>
+                    </div>
+                    <div className="h-1.5 bg-surface-overlay rounded-full overflow-hidden">
+                      <div
+                        className="h-full bg-accent rounded-full transition-all duration-500"
+                        style={{ width: `${pct}%` }}
+                      />
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
       )}
 

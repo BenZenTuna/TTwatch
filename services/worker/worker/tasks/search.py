@@ -120,6 +120,20 @@ def run_topic_search(user_id: str, topic_id: str, session=None):
                 "source_url": r["source_url"],
             })
 
+        # Track expected article count for processing progress
+        dispatched_count = len(results)
+        if dispatched_count > 0:
+            try:
+                proc_prefix = f"ttwatch:processing:{topic_id}"
+                _search_redis.set(f"{proc_prefix}:expected", dispatched_count, ex=3600)
+                _search_redis.set(f"{proc_prefix}:phase", "ingesting", ex=3600)
+                # Reset counters for new batch
+                for counter in ("embedded", "summarized", "sentiment", "relevance"):
+                    _search_redis.delete(f"{proc_prefix}:{counter}")
+                _search_redis.delete(f"{proc_prefix}:cluster_dispatched")
+            except Exception as e:
+                logger.warning(f"Failed to set processing counters: {e}")
+
         logger.info(
             f"run_topic_search: dispatched {len(results)} articles "
             f"for topic '{topic.name}' ({len(queries)} queries)"

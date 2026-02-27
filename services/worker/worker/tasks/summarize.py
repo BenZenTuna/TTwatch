@@ -1,7 +1,9 @@
 """Summarize article text using LLM."""
 import logging
+import os
 import re
 
+import redis as redis_lib
 from sqlalchemy import select, or_
 
 from worker.celeryconfig import app
@@ -10,6 +12,10 @@ from worker.db import db_session
 from worker.llm_sync import SyncLLMClient
 from worker.tasks.utils import fetch_article_text
 from app.models import Article
+
+_cache_redis = redis_lib.from_url(
+    os.environ.get("REDIS_CACHE_URL", "redis://redis:6379/3")
+)
 
 logger = logging.getLogger(__name__)
 
@@ -106,6 +112,14 @@ def summarize_article(user_id: str, article_id: str, session=None):
     article.summary = clean_summary(summary)
 
     logger.info(f"Summarized article {article_id}: {article.title[:60]}")
+
+    # Track summarization progress
+    try:
+        key = f"ttwatch:processing:{article.topic_id}:summarized"
+        _cache_redis.incr(key)
+        _cache_redis.expire(key, 3600)
+    except Exception:
+        pass
 
 
 @app.task(name="reprocess_summaries")
