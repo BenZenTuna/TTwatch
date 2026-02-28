@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class TopicCreate(BaseModel):
@@ -60,11 +60,11 @@ class ArticleResponse(BaseModel):
 class BriefingResponse(BaseModel):
     id: uuid.UUID
     generated_at: datetime
-    summary: str | None
-    highlights: list
-    new_entities: list
-    watch_items: list
-    coverage_gaps: list
+    summary: str | None = None
+    highlights: list = Field(default_factory=list)
+    new_entities: list = Field(default_factory=list)
+    watch_items: list = Field(default_factory=list)
+    coverage_gaps: list = Field(default_factory=list)
 
     model_config = {"from_attributes": True}
 

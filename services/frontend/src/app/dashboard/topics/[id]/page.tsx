@@ -692,6 +692,9 @@ export default function TopicPage() {
           {/* ── Overview Tab ── */}
           {activeTab === "overview" && (
             <div className="space-y-6">
+              <p className="text-xs text-gray-500">
+                A snapshot of your topic: article counts, how they cluster into themes, trend rankings, and the latest AI briefing summary.
+              </p>
               {/* Stats row */}
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                 <div className="card p-4">
@@ -756,9 +759,9 @@ export default function TopicPage() {
                   <p className="text-sm text-gray-300 leading-relaxed">
                     {briefings[0].summary}
                   </p>
-                  {briefings[0].highlights.length > 0 && (
+                  {(briefings[0].highlights ?? []).length > 0 && (
                     <ul className="mt-3 space-y-1">
-                      {briefings[0].highlights.slice(0, 4).map((h, i) => (
+                      {(briefings[0].highlights ?? []).slice(0, 4).map((h, i) => (
                         <li
                           key={i}
                           className="text-sm text-gray-400 flex items-start gap-2"
@@ -777,6 +780,9 @@ export default function TopicPage() {
           {/* ── Articles Tab ── */}
           {activeTab === "articles" && (
             <div className="space-y-3">
+              <p className="text-xs text-gray-500">
+                All articles collected from web searches, ranked by relevance. Each article is fetched, extracted, and analyzed for sentiment and key topics.
+              </p>
               {articles.length === 0 ? (
                 <div className="card p-8 flex flex-col items-center justify-center text-center">
                   <Newspaper className="w-10 h-10 text-gray-600 mb-3" />
@@ -855,6 +861,9 @@ export default function TopicPage() {
               <h3 className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-3">
                 Entity Network
               </h3>
+              <p className="text-xs text-gray-500 mb-3">
+                People, companies, and key terms extracted from your articles. Lines between them show how often they appear together — thicker lines mean stronger connections.
+              </p>
               <EntityNetwork
                 graph={entityGraph || { entities: [], edges: [] }}
               />
@@ -867,6 +876,9 @@ export default function TopicPage() {
               <h3 className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-3">
                 Sentiment Timeline
               </h3>
+              <p className="text-xs text-gray-500 mb-3">
+                How positive or negative the news coverage is over time. Each article is scored by AI from -1 (very negative) to +1 (very positive), then averaged per cluster.
+              </p>
               <SentimentTimeline data={sentimentData} />
             </div>
           )}

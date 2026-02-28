@@ -193,9 +193,9 @@ export default function DashboardPage() {
               <p className="text-gray-200 text-sm leading-relaxed">
                 {latestBriefing.summary}
               </p>
-              {latestBriefing.highlights.length > 0 && (
+              {(latestBriefing.highlights ?? []).length > 0 && (
                 <ul className="mt-3 space-y-1">
-                  {latestBriefing.highlights.slice(0, 4).map((h, i) => (
+                  {(latestBriefing.highlights ?? []).slice(0, 4).map((h, i) => (
                     <li
                       key={i}
                       className="text-sm text-gray-400 flex items-start gap-2"

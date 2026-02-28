@@ -76,10 +76,10 @@ export interface BriefingResponse {
   id: string;
   generated_at: string;
   summary: string | null;
-  highlights: string[];
-  new_entities: string[];
-  watch_items: string[];
-  coverage_gaps: string[];
+  highlights: string[] | null;
+  new_entities: Array<string | { name?: string; type?: string }> | null;
+  watch_items: string[] | null;
+  coverage_gaps: Array<string | { description?: string; name?: string }> | null;
 }
 
 export interface EntityResponse {

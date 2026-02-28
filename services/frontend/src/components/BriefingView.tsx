@@ -45,6 +45,9 @@ export function BriefingView({
 
   return (
     <div className="space-y-4">
+      <p className="text-xs text-gray-500">
+        AI-generated briefings that summarize your articles into key highlights and actionable insights. Generate a new briefing anytime to get the latest analysis.
+      </p>
       {/* Header with generate button */}
       <div className="flex items-center justify-between">
         <h3 className="text-sm font-semibold text-gray-400 uppercase tracking-wider">
@@ -104,6 +107,11 @@ function BriefingCard({
   expanded: boolean;
   onToggle: () => void;
 }) {
+  const highlights = briefing.highlights ?? [];
+  const watchItems = briefing.watch_items ?? [];
+  const newEntities = briefing.new_entities ?? [];
+  const coverageGaps = briefing.coverage_gaps ?? [];
+
   return (
     <div className="card overflow-hidden">
       {/* Collapsible header */}
@@ -145,11 +153,11 @@ function BriefingCard({
           )}
 
           {/* Highlights */}
-          {briefing.highlights.length > 0 && (
+          {highlights.length > 0 && (
             <div>
               <SectionHeading icon={Sparkles} label="Key Highlights" />
               <ul className="space-y-1.5">
-                {briefing.highlights.map((h, i) => (
+                {highlights.map((h, i) => (
                   <li
                     key={i}
                     className="text-sm text-gray-400 flex items-start gap-2"
@@ -165,11 +173,11 @@ function BriefingCard({
           )}
 
           {/* Watch items */}
-          {briefing.watch_items.length > 0 && (
+          {watchItems.length > 0 && (
             <div>
               <SectionHeading icon={Eye} label="Watch Items" />
               <ul className="space-y-1.5">
-                {briefing.watch_items.map((item, i) => (
+                {watchItems.map((item, i) => (
                   <li
                     key={i}
                     className="text-sm text-gray-400 flex items-start gap-2"
@@ -183,16 +191,18 @@ function BriefingCard({
           )}
 
           {/* New entities */}
-          {briefing.new_entities.length > 0 && (
+          {newEntities.length > 0 && (
             <div>
               <SectionHeading icon={Sparkles} label="New Entities Detected" />
               <div className="flex flex-wrap gap-1.5">
-                {briefing.new_entities.map((entity, i) => (
+                {newEntities.map((entity, i) => (
                   <span
                     key={i}
                     className="text-xs px-2 py-1 rounded-full bg-accent/10 text-accent border border-accent/20"
                   >
-                    {entity}
+                    {typeof entity === "object" && entity !== null
+                      ? (entity as { name?: string }).name ?? JSON.stringify(entity)
+                      : String(entity)}
                   </span>
                 ))}
               </div>
@@ -200,17 +210,21 @@ function BriefingCard({
           )}
 
           {/* Coverage gaps */}
-          {briefing.coverage_gaps.length > 0 && (
+          {coverageGaps.length > 0 && (
             <div>
               <SectionHeading icon={ShieldAlert} label="Coverage Gaps" />
               <ul className="space-y-1.5">
-                {briefing.coverage_gaps.map((gap, i) => (
+                {coverageGaps.map((gap, i) => (
                   <li
                     key={i}
                     className="text-sm text-gray-400 flex items-start gap-2"
                   >
                     <ShieldAlert className="w-3.5 h-3.5 text-red-400 mt-0.5 shrink-0" />
-                    {gap}
+                    {typeof gap === "object" && gap !== null
+                      ? (gap as { description?: string; name?: string }).description
+                        ?? (gap as { name?: string }).name
+                        ?? JSON.stringify(gap)
+                      : String(gap)}
                   </li>
                 ))}
               </ul>
