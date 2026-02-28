@@ -16,15 +16,15 @@ from worker.celeryconfig import app
 from worker.rls import with_rls_context
 from app.models import Article
 
-# Custom trafilatura config with reduced download timeout (10s vs default 30s).
-# Prevents slow-failing URLs (SSL errors, redirects) from blocking workers.
-_traf_config = configparser.ConfigParser()
-_traf_config.read_dict({"DEFAULT": {
-    "DOWNLOAD_TIMEOUT": "10",
-    "MAX_REDIRECTS": "2",
-    "MIN_FILE_SIZE": "0",
-    "MIN_EXTRACTED_SIZE": "0",
-}})
+# Start from trafilatura's default config and override specific settings.
+# Using read_dict with only a subset was missing required keys like 'cookie',
+# causing "No option 'cookie' in section: 'DEFAULT'" on every fetch_url call.
+from trafilatura.settings import use_config as _traf_default_config
+_traf_config = _traf_default_config()
+_traf_config.set("DEFAULT", "DOWNLOAD_TIMEOUT", "10")
+_traf_config.set("DEFAULT", "MAX_REDIRECTS", "2")
+_traf_config.set("DEFAULT", "MIN_FILE_SIZE", "0")
+_traf_config.set("DEFAULT", "MIN_EXTRACTED_SIZE", "0")
 
 _cache_redis = redis_lib.from_url(
     os.environ.get("REDIS_CACHE_URL", "redis://redis:6379/3")

@@ -162,6 +162,32 @@ def recluster_topic(user_id: str, topic_id: str, session=None):
 
     if len(selected_ids) < 10:
         logger.info(f"Topic {topic_id}: only {len(selected_ids)} articles, skipping")
+        # Mark pipeline complete so search_status doesn't stay at "processing"
+        try:
+            proc_prefix = f"ttwatch:processing:{topic_id}"
+            _cache_redis.set(f"{proc_prefix}:phase", "complete", ex=7200)
+            status_key = f"ttwatch:search_status:{topic_id}"
+            raw = _cache_redis.get(status_key)
+            if raw:
+                data = json.loads(raw)
+                if data.get("status") == "processing":
+                    now = datetime.now(timezone.utc).isoformat()
+                    completed_payload = {
+                        "status": "completed",
+                        "completed_at": now,
+                        "started_at": data.get("started_at", now),
+                        "articles_found": data.get("articles_found", 0),
+                        "cluster_count": 0,
+                        "user_id": data.get("user_id", user_id),
+                    }
+                    _cache_redis.setex(status_key, 3600, json.dumps(completed_payload))
+                    _cache_redis.publish("ttwatch:search:completed", json.dumps({
+                        **completed_payload,
+                        "type": "search_completed",
+                        "topic_id": topic_id,
+                    }))
+        except Exception as e:
+            logger.warning(f"Failed to finalize status for topic {topic_id}: {e}")
         return
 
     # Phase 2: Fetch vectors only for selected points

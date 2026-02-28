@@ -138,19 +138,9 @@ def run_topic_search(user_id: str, topic_id: str, session=None):
                     "source_url": item.get("parsed_url", [""])[0] if item.get("parsed_url") else "",
                 })
 
-        # Dispatch ingestion for each unique result
-        for r in results:
-            app.send_task("ingest_article", args=[
-                user_id,
-                topic_id,
-                r["url"],
-            ], kwargs={
-                "title": r["title"],
-                "source_name": r["source_name"],
-                "source_url": r["source_url"],
-            })
-
-        # Track expected article count for processing progress
+        # Initialize processing counters BEFORE dispatching tasks to avoid
+        # race condition where early-completing tasks DECR expected before
+        # it is SET, then SET overwrites their decrements.
         dispatched_count = len(results)
         if dispatched_count > 0:
             try:
@@ -166,6 +156,18 @@ def run_topic_search(user_id: str, topic_id: str, session=None):
                 _search_redis.set(f"{progress_prefix}:tasks_completed", 0, ex=7200)
             except Exception as e:
                 logger.warning(f"Failed to set processing counters: {e}")
+
+        # Dispatch ingestion for each unique result (AFTER counters are set)
+        for r in results:
+            app.send_task("ingest_article", args=[
+                user_id,
+                topic_id,
+                r["url"],
+            ], kwargs={
+                "title": r["title"],
+                "source_name": r["source_name"],
+                "source_url": r["source_url"],
+            })
 
         logger.info(
             f"run_topic_search: dispatched {len(results)} articles "
@@ -272,7 +274,28 @@ def detect_stalled_pipelines():
             current_phase = current_phase_raw.decode() if current_phase_raw else ""
 
             if current_phase == "clustering":
-                continue  # Clustering in progress
+                # Allow clustering up to the stall timeout, then force-complete
+                if now - started_at < _STALL_TIMEOUT * 2:
+                    continue  # Give clustering extra time (2x stall timeout)
+                logger.warning(
+                    f"Clustering stalled for topic {topic_id}: started {started_at_str}. Forcing completion."
+                )
+                _search_redis.set(f"{proc_prefix}:phase", "complete", ex=7200)
+                completed_payload = {
+                    "status": "completed",
+                    "completed_at": now.isoformat(),
+                    "started_at": started_at_str,
+                    "articles_found": data.get("articles_found", 0),
+                    "user_id": user_id,
+                }
+                _search_redis.setex(key, 3600, json.dumps(completed_payload))
+                _search_redis.publish("ttwatch:search:completed", json.dumps({
+                    **completed_payload,
+                    "type": "search_completed",
+                    "topic_id": topic_id,
+                }))
+                unstuck += 1
+                continue
 
             if current_phase == "complete":
                 # Phase completed but search_status stuck at "processing" — finalize it
