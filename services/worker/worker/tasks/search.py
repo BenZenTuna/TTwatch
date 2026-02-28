@@ -271,8 +271,27 @@ def detect_stalled_pipelines():
             current_phase_raw = _search_redis.get(f"{proc_prefix}:phase")
             current_phase = current_phase_raw.decode() if current_phase_raw else ""
 
-            if current_phase in ("complete", "clustering"):
-                continue  # Already moving forward
+            if current_phase == "clustering":
+                continue  # Clustering in progress
+
+            if current_phase == "complete":
+                # Phase completed but search_status stuck at "processing" — finalize it
+                completed_payload = {
+                    "status": "completed",
+                    "completed_at": now.isoformat(),
+                    "started_at": started_at_str,
+                    "articles_found": data.get("articles_found", 0),
+                    "user_id": user_id,
+                }
+                _search_redis.setex(key, 3600, json.dumps(completed_payload))
+                _search_redis.publish("ttwatch:search:completed", json.dumps({
+                    **completed_payload,
+                    "type": "search_completed",
+                    "topic_id": topic_id,
+                }))
+                logger.info(f"Finalized stale search_status for topic {topic_id} (phase was already complete)")
+                unstuck += 1
+                continue
 
             logger.warning(
                 f"Stall detected for topic {topic_id}: status='processing' "

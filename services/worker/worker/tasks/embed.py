@@ -1,6 +1,8 @@
 """Embed article text and store vector in Qdrant with user isolation payload."""
+import json
 import os
 import logging
+from datetime import datetime, timezone
 
 import redis as redis_lib
 from sqlalchemy import select
@@ -37,6 +39,7 @@ def _track_skipped_embed(topic_id: str, user_id: str):
 
         if new_expected <= 0:
             _cache_redis.set(f"{proc_prefix}:phase", "complete", ex=7200)
+            _finalize_search_status(topic_id, user_id)
             return
 
         embedded_raw = _cache_redis.get(f"{proc_prefix}:embedded")
@@ -52,6 +55,35 @@ def _track_skipped_embed(topic_id: str, user_id: str):
                 )
     except Exception as e:
         logger.warning(f"Failed to track skipped embed for topic {topic_id}: {e}")
+
+
+def _finalize_search_status(topic_id: str, user_id: str):
+    """Update search_status to 'completed' and notify frontend via pub/sub."""
+    try:
+        status_key = f"ttwatch:search_status:{topic_id}"
+        raw = _cache_redis.get(status_key)
+        if not raw:
+            return
+        data = json.loads(raw)
+        if data.get("status") != "processing":
+            return
+        now = datetime.now(timezone.utc).isoformat()
+        completed_payload = {
+            "status": "completed",
+            "completed_at": now,
+            "started_at": data.get("started_at", now),
+            "articles_found": 0,
+            "user_id": user_id,
+        }
+        _cache_redis.setex(status_key, 3600, json.dumps(completed_payload))
+        _cache_redis.publish("ttwatch:search:completed", json.dumps({
+            **completed_payload,
+            "type": "search_completed",
+            "topic_id": topic_id,
+        }))
+        logger.info(f"Finalized search status for topic {topic_id} (all embeds skipped)")
+    except Exception as e:
+        logger.warning(f"Failed to finalize search status for topic {topic_id}: {e}")
 
 
 @app.task(name="embed_article", bind=True, max_retries=3, default_retry_delay=30)

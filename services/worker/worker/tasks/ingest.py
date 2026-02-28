@@ -1,8 +1,10 @@
 """Article ingestion pipeline: fetch → extract → dedup → store → fan-out."""
 import configparser
 import hashlib
+import json
 import logging
 import os
+from datetime import datetime, timezone
 from io import BytesIO
 
 import redis as redis_lib
@@ -62,8 +64,9 @@ def _track_skipped_article(topic_id: str, user_id: str):
         _cache_redis.expire(f"{proc_prefix}:expected", 7200)
 
         if new_expected <= 0:
-            # All articles were skipped — mark complete directly
+            # All articles were skipped — mark complete and finalize search status
             _cache_redis.set(f"{proc_prefix}:phase", "complete", ex=7200)
+            _finalize_search_status(topic_id, user_id)
             return
 
         # Check if embedded count now meets threshold for clustering
@@ -80,6 +83,40 @@ def _track_skipped_article(topic_id: str, user_id: str):
                 )
     except Exception as e:
         logger.warning(f"Failed to track skipped article for topic {topic_id}: {e}")
+
+
+def _finalize_search_status(topic_id: str, user_id: str):
+    """Update search_status to 'completed' and notify frontend via pub/sub.
+
+    Called when all articles are skipped/failed and processing:phase is set
+    to 'complete'. Without this, search_status stays at 'processing' forever
+    and the frontend never receives the completion WebSocket event.
+    """
+    try:
+        status_key = f"ttwatch:search_status:{topic_id}"
+        raw = _cache_redis.get(status_key)
+        if not raw:
+            return
+        data = json.loads(raw)
+        if data.get("status") != "processing":
+            return
+        now = datetime.now(timezone.utc).isoformat()
+        completed_payload = {
+            "status": "completed",
+            "completed_at": now,
+            "started_at": data.get("started_at", now),
+            "articles_found": 0,
+            "user_id": user_id,
+        }
+        _cache_redis.setex(status_key, 3600, json.dumps(completed_payload))
+        _cache_redis.publish("ttwatch:search:completed", json.dumps({
+            **completed_payload,
+            "type": "search_completed",
+            "topic_id": topic_id,
+        }))
+        logger.info(f"Finalized search status for topic {topic_id} (all articles skipped)")
+    except Exception as e:
+        logger.warning(f"Failed to finalize search status for topic {topic_id}: {e}")
 
 
 @app.task(name="ingest_article", bind=True, max_retries=2)

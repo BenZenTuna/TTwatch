@@ -1,6 +1,6 @@
 # TTwatch Platform Documentation
 
-**Version**: 1.0
+**Version**: 1.1
 **Last Updated**: 2026-02-27
 **Scope**: Complete platform reference covering architecture, deployment, APIs, data flows, and implementation details.
 
@@ -26,12 +26,13 @@
 16. [File and Directory Reference](#16-file-and-directory-reference)
 17. [Development Guide](#17-development-guide)
 18. [Appendix: Key Design Decisions](#18-appendix-key-design-decisions)
+19. [Changelog](#19-changelog-v10--v11)
 
 ---
 
 ## 1. Executive Summary
 
-TTwatch is a self-hosted, multi-tenant intelligence monitoring platform that continuously ingests news from the open web, clusters related articles, extracts entities, tracks sentiment, generates analyst-style briefings, and correlates news events with financial market movements. It operates entirely offline (no mandatory cloud dependencies) using a local LLM (vLLM serving QwQ-32B-AWQ) and a local embedding model (Qwen3-Embedding-0.6B), with optional cloud LLM fallback for GPU-less deployments.
+TTwatch is a self-hosted, multi-tenant intelligence monitoring platform that continuously ingests news from the open web, clusters related articles, extracts entities, tracks sentiment, generates analyst-style briefings, and correlates news events with financial market movements. It operates entirely offline (no mandatory cloud dependencies) using dual local LLMs (vLLM serving Qwen3-32B-AWQ as the primary reasoning model and Qwen3-8B-AWQ as a fast classification model) and a local embedding model (Qwen3-Embedding-0.6B), with optional cloud LLM fallback for GPU-less deployments.
 
 ### Core Capabilities
 
@@ -41,7 +42,9 @@ TTwatch is a self-hosted, multi-tenant intelligence monitoring platform that con
 - **Sentiment Analysis**: Per-article sentiment classification on a -1.0 to 1.0 scale with daily historical aggregation per cluster.
 - **Briefing Generation**: Hierarchical summarization pipeline (articles to cluster summaries to topic briefings) producing executive-style intelligence reports.
 - **Investment Intelligence**: Watchlists, price alerts (real-time via WebSocket), investment analyses per asset, and correlation signal detection between news sentiment and price movements.
-- **Real-Time Updates**: WebSocket connections deliver price alert notifications and search completion events to the frontend dashboard.
+- **Real-Time Updates**: WebSocket connections deliver price alert notifications, search completion events, and search progress updates to the frontend dashboard.
+- **Dual-Model LLM Routing**: Per-user configurable task routing between primary (heavy reasoning) and fast (lightweight classification) LLM models across 10 task categories.
+- **Pipeline Stall Detection**: Automatic detection and recovery of stuck processing pipelines every 2 minutes.
 
 ### Design Philosophy
 
@@ -56,7 +59,7 @@ TTwatch is a self-hosted, multi-tenant intelligence monitoring platform that con
 
 ### High-Level Architecture
 
-TTwatch follows a service-oriented architecture with 11 Docker containers communicating over a shared Docker network:
+TTwatch follows a service-oriented architecture with 12 Docker containers communicating over a shared Docker network:
 
 ```
                                     +------------------+
@@ -76,18 +79,18 @@ TTwatch follows a service-oriented architecture with 11 Docker containers commun
                             v           v       v           v
                      +----------+ +----------+ +----------+ +----------+
                      |  Redis   | |  Qdrant  | |  MinIO   | |  vLLM    |
-                     |  (7)     | | (v1.12)  | | (S3)     | | (GPU)    |
+                     |  (7)     | | (v1.12)  | | (S3)     | | (Primary)|
                      +----------+ +----------+ +----------+ +----------+
                             ^                                    ^
-                            |                                    |
-                     +------+------+                      +------+------+
-                     | Worker-IO   |                      |  Embedder   |
-                     | (gevent x32)|                      | (GPU)       |
-                     +------+------+                      +-------------+
-                            |
-                     +------+------+
-                     | Worker-CPU  |
-                     | (prefork x2)|
+                            |                              +-----+------+
+                     +------+------+                       | vLLM-Fast  |
+                     | Worker-IO   |                       | (Classify) |
+                     | (gevent x32)|                       +-----+------+
+                     +------+------+                             ^
+                            |                              +-----+------+
+                     +------+------+                       |  Embedder  |
+                     | Worker-CPU  |                       |  (GPU/CPU) |
+                     | (prefork x2)|                       +------------+
                      +-------------+
                             ^
                      +------+------+
@@ -105,20 +108,21 @@ TTwatch follows a service-oriented architecture with 11 Docker containers commun
 | **Redis 7** | `redis` | Celery broker (db0), result backend (db1), URL dedup set (db2), cache/rate-limit/pub-sub (db3) |
 | **MinIO** | `minio` | S3-compatible object store for raw article text |
 | **SearXNG** | `searxng` | Privacy-respecting meta-search engine (Google, Bing, DuckDuckGo, Google News, Bing News) |
-| **API** | `api` | FastAPI application server (HTTP + WebSocket) |
+| **API** | `api` | FastAPI application server (HTTP + WebSocket) on port 8080 |
 | **Worker-IO** | `worker-io` | Celery worker pool (gevent, concurrency=32) for I/O-bound tasks |
 | **Worker-CPU** | `worker-cpu` | Celery worker pool (prefork, concurrency=2) for CPU/LLM-bound tasks |
 | **Scheduler** | `scheduler` | Celery Beat scheduler for periodic task dispatch |
-| **Frontend** | `frontend` | Next.js 14.2 single-page application |
-| **vLLM** | `vllm` | GPU-accelerated LLM inference server (QwQ-32B-AWQ) |
-| **Embedder** | `embedder` | GPU-accelerated embedding server (Qwen3-Embedding-0.6B, 1024 dimensions) |
+| **Frontend** | `frontend` | Next.js 14.2 single-page application on port 3000 |
+| **vLLM** | `vllm` | GPU-accelerated primary LLM inference (Qwen3-32B-AWQ) for complex reasoning tasks |
+| **vLLM-Fast** | `vllm-fast` | GPU-accelerated fast LLM inference (Qwen3-8B-AWQ) for classification tasks |
+| **Embedder** | `embedder` | Embedding server (Qwen3-Embedding-0.6B, 1024 dimensions, GPU or CPU) |
 
 ### Communication Patterns
 
-1. **Synchronous HTTP**: Frontend to API, API to Qdrant/MinIO, Worker to SearXNG/vLLM/Embedder/Qdrant/MinIO.
+1. **Synchronous HTTP**: Frontend to API, API to Qdrant/MinIO, Worker to SearXNG/vLLM/vLLM-Fast/Embedder/Qdrant/MinIO.
 2. **Async message queue**: API dispatches Celery tasks via Redis broker. Workers consume from `ttwatch:default` (IO tasks) and `ttwatch:compute` (CPU tasks) queues.
-3. **WebSocket**: Frontend maintains a persistent WebSocket connection to API at `/ws` for real-time price alerts and search completion notifications.
-4. **Redis pub/sub**: Workers publish to `ttwatch:alerts:triggered` and `ttwatch:search:completed` channels. API background coroutines subscribe and bridge messages to the WebSocket ConnectionManager.
+3. **WebSocket**: Frontend maintains a persistent WebSocket connection to API at `/ws` for real-time price alerts, search completion, and search progress notifications.
+4. **Redis pub/sub**: Workers publish to `ttwatch:alerts:triggered`, `ttwatch:search:completed`, and `ttwatch:search:progress` channels. API background coroutines subscribe and bridge messages to the WebSocket ConnectionManager.
 5. **Shared database**: Both API (async via asyncpg) and Workers (sync via psycopg2 with psycogreen gevent patching) connect to PostgreSQL with different roles and connection pools.
 
 ---
@@ -129,14 +133,14 @@ TTwatch follows a service-oriented architecture with 11 Docker containers commun
 
 | Component | Technology | Version/Details |
 |-----------|-----------|-----------------|
-| API Framework | FastAPI | Async with Uvicorn ASGI server |
+| API Framework | FastAPI | Async with Uvicorn ASGI server on port 8080 |
 | ORM (API) | SQLAlchemy | Async engine via asyncpg, pool_size=20, max_overflow=10 |
 | ORM (Worker) | SQLAlchemy | Sync engine via psycopg2 + psycogreen gevent patching, pool_size=5 |
-| Migrations | Alembic | 6 migration versions (001-006) |
+| Migrations | Alembic | 7 migration versions (001-007) |
 | Task Queue | Celery | JSON serialization, dual worker pools |
 | Password Hashing | Argon2id | time_cost=3, memory_cost=65536 (64 MB), parallelism=4 |
 | JWT | PyJWT | HS256 algorithm |
-| Content Extraction | trafilatura | `favor_precision=True`, `include_tables=True` |
+| Content Extraction | trafilatura | `favor_precision=True`, `include_tables=True`, download timeout 10s, max redirects 2 |
 | HTTP Client (API) | httpx | Async client for vLLM/embedder communication |
 | HTTP Client (Worker) | httpx | Sync client with 300s timeout, LAN startup retry (30 attempts, exponential backoff 5-60s) |
 | Retry Logic | tenacity | Exponential backoff for LAN service connectivity |
@@ -145,26 +149,31 @@ TTwatch follows a service-oriented architecture with 11 Docker containers commun
 
 | Component | Technology | Details |
 |-----------|-----------|---------|
-| LLM Inference | vLLM v0.16.0 | `--quantization awq --gpu-memory-utilization 0.85 --max-model-len 32768 --max-num-seqs 8 --enable-prefix-caching --reasoning-parser deepseek_r1` |
-| LLM Model | QwQ-32B-AWQ | Qwen reasoning model, AWQ 4-bit quantization |
+| LLM Inference (Primary) | vLLM v0.16.0 | `--quantization awq_marlin --gpu-memory-utilization 0.65 --max-model-len 8192 --max-num-seqs 8 --enable-prefix-caching --reasoning-parser deepseek_r1` |
+| LLM Inference (Fast) | vLLM v0.16.0 | `--quantization awq_marlin --gpu-memory-utilization 0.85 --max-model-len 8192 --max-num-seqs 16 --enable-prefix-caching --disable-log-requests` |
+| Primary LLM Model | Qwen3-32B-AWQ | Qwen3 reasoning model, AWQ 4-bit quantization |
+| Fast LLM Model | Qwen3-8B-AWQ | Qwen3 classification model, AWQ 4-bit, thinking disabled via `chat_template_kwargs.enable_thinking=False` |
 | Embedding Model | Qwen3-Embedding-0.6B | 1024-dimensional embeddings, COSINE distance |
-| Embedding Server | sentence-transformers | FastAPI wrapper, `batch_size=64`, `normalize_embeddings=True`, CUDA |
+| Embedding Server | sentence-transformers | FastAPI wrapper, `batch_size=64`, `normalize_embeddings=True`, configurable device (GPU/CPU) |
 | Dimensionality Reduction | UMAP | 1024 to 20 dimensions, cosine metric, `random_state=42` |
 | Clustering | HDBSCAN | `min_cluster_size=5`, `min_samples=3` |
 | Cloud LLM (optional) | OpenAI / Anthropic / OpenRouter | Configurable fallback; cloud embedding uses `text-embedding-3-large` (3072 dims) |
+| LLM Task Router | Per-user config | 10 task categories routable to primary/fast/auto per user via `llm_task_config` table |
 
 ### Frontend
 
 | Component | Technology | Version/Details |
 |-----------|-----------|-----------------|
-| Framework | Next.js | 14.2.29 |
-| UI Library | React | 18 |
-| State Management | Zustand | Lightweight store with `user`, `topics`, `clusters`, `latestBriefing`, `pendingUpdates` |
-| HTTP Client | Axios | With interceptors for JWT auto-refresh on 401 |
-| Styling | Tailwind CSS | Dark theme with custom design tokens (surface base `#0f1117`) |
-| Charts | Recharts | Sentiment timelines, trend charts |
-| Visualizations | D3.js | Force-directed bubble clusters and entity network graphs |
-| Date Formatting | date-fns | |
+| Framework | Next.js | ^14.2.0 |
+| UI Library | React | 18.3.0 |
+| State Management | Zustand | ^4.5.0 |
+| HTTP Client | Axios | ^1.7.0 with interceptors for JWT auto-refresh on 401 |
+| Styling | Tailwind CSS | ^3.4.0, dark theme with custom design tokens (surface base `#0f1117`) |
+| Charts | Recharts | ^2.12.0, sentiment timelines, trend charts |
+| Visualizations | D3.js | ^7.9.0, force-directed bubble clusters and entity network graphs |
+| Icons | Lucide React | ^0.400.0 |
+| Date Formatting | date-fns | ^3.6.0 |
+| TypeScript | | ^5.5.0 |
 
 ### Infrastructure
 
@@ -172,7 +181,7 @@ TTwatch follows a service-oriented architecture with 11 Docker containers commun
 |-----------|-----------|-----------------|
 | Database | PostgreSQL | 16 with `pg_trgm` extension, RLS |
 | Vector DB | Qdrant | v1.12.1, COSINE distance, REST API |
-| Cache/Queue | Redis | 7-alpine, 4 databases (broker, results, dedup, cache) |
+| Cache/Queue | Redis | 7-alpine, 4 databases (broker, results, dedup, cache), maxmemory 512MB volatile-LRU |
 | Object Storage | MinIO | S3-compatible, single bucket `ttwatch-content` |
 | Meta-Search | SearXNG | Google, Bing, DuckDuckGo, Google News, Bing News engines |
 | Containerization | Docker Compose | 7 compose files for 4 deployment modes |
@@ -188,50 +197,53 @@ TTwatch supports four deployment modes via Docker Compose overlay files:
 
 #### 1. Development (`make dev`)
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
 ```
 - Hot-reload for API (`uvicorn --reload`) and workers (`watchmedo auto-restart`)
 - Source code mounted as volumes for live editing
 - No GPU services (uses cloud or no LLM)
+- Worker-IO runs in solo mode with concurrency=1 for debugging
 
 #### 2. GPU-Colocated (`make gpu`)
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.gpu.yml up
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
 ```
 - All services on a single machine with NVIDIA GPU
-- vLLM and embedder containers use `runtime: nvidia` with `device_ids: ['0']`
-- API and workers depend on vLLM/embedder health checks
+- vLLM (primary) uses 65% GPU memory, vLLM-Fast uses 85% (sequential startup)
+- Embedder runs on CPU by default (`EMBEDDER_DEVICE=cpu`)
+- API and workers depend on vLLM, vLLM-Fast, and embedder health checks
 
 #### 3. LAN-Distributed (`make lan`)
 ```bash
 # Main node:
-docker compose -f docker-compose.yml -f docker-compose.lan.yml up
+docker compose -f docker-compose.yml -f docker-compose.lan.yml up -d
 # GPU node:
-docker compose -f docker-compose.gpu-node.yml up
+docker compose -f docker-compose.gpu-node.yml up -d
 # Search node (optional):
-docker compose -f docker-compose.search-node.yml up
+docker compose -f docker-compose.search-node.yml up -d
 ```
 - Splits GPU inference, search, and main application across machines
-- Configure via environment variables: `VLLM_URL`, `EMBEDDER_URL`, `SEARXNG_URL`
+- Configure via environment variables: `VLLM_URL`, `VLLM_FAST_URL`, `EMBEDDER_URL`, `SEARXNG_URL`
 - Workers retry LAN connections with exponential backoff (30 attempts, 5-60s delay)
+- Local SearXNG disabled via Docker profile
 
 #### 4. Cloud-Only (`make cloud`)
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.cloud.yml up
+docker compose -f docker-compose.yml -f docker-compose.cloud.yml up -d
 ```
 - No local GPU required
 - Sets `LLM_PROVIDER=cloud`
-- Uses OpenAI/Anthropic/OpenRouter for LLM inference
+- Uses OpenAI/Anthropic/OpenRouter for LLM inference (default: `gpt-4o-mini`)
 - Uses `text-embedding-3-large` (3072 dimensions) for embeddings
-- Disables local vLLM and embedder services
+- Disables local vLLM, vLLM-Fast, and embedder services
 
 ### Docker Compose Files
 
 | File | Purpose |
 |------|---------|
 | `docker-compose.yml` | Base configuration: postgres, qdrant, redis, minio, searxng, api, worker-io, worker-cpu, scheduler, frontend |
-| `docker-compose.gpu.yml` | Adds vllm + embedder GPU services, overrides worker/api dependencies |
-| `docker-compose.dev.yml` | Development overrides: hot-reload, source volume mounts |
+| `docker-compose.gpu.yml` | Adds vllm + vllm-fast + embedder services, overrides worker/api dependencies |
+| `docker-compose.dev.yml` | Development overrides: hot-reload, source volume mounts, debug logging |
 | `docker-compose.cloud.yml` | Cloud LLM mode: sets provider env vars, disables GPU services |
 | `docker-compose.lan.yml` | LAN mode: disables local searxng, removes GPU dependencies |
 | `docker-compose.gpu-node.yml` | Standalone GPU node: vllm + embedder only, exposes ports 8000/8001 |
@@ -243,46 +255,59 @@ The base `docker-compose.yml` defines an `x-common-env` YAML anchor reused by AP
 
 ```yaml
 x-common-env: &common-env
-  DATABASE_URL: postgresql://ttwatch_app:${POSTGRES_PASSWORD}@postgres:5432/ttwatch
   REDIS_URL: redis://redis:6379/0
   CELERY_RESULT_BACKEND: redis://redis:6379/1
   REDIS_DEDUP_URL: redis://redis:6379/2
   REDIS_CACHE_URL: redis://redis:6379/3
   QDRANT_URL: http://qdrant:6333
   VLLM_URL: ${VLLM_URL:-http://vllm:8000/v1}
+  VLLM_FAST_URL: ${VLLM_FAST_URL:-http://vllm-fast:8000/v1}
   EMBEDDER_URL: ${EMBEDDER_URL:-http://embedder:8001}
   SEARXNG_URL: ${SEARXNG_URL:-http://searxng:8080}
-  MINIO_URL: http://minio:9000
-  MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY}
-  MINIO_SECRET_KEY: ${MINIO_SECRET_KEY}
-  MINIO_BUCKET: ttwatch-content
+  MINIO_URL: ${MINIO_URL:-http://minio:9000}
+  MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+  MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+  MINIO_BUCKET: ${MINIO_BUCKET:-ttwatch-content}
+  LLM_PROVIDER: ${LLM_PROVIDER:-local}
+  LOCAL_MODEL_NAME: ${LOCAL_MODEL_NAME:-Qwen3-32B-AWQ}
+  FAST_MODEL_NAME: ${FAST_MODEL_NAME:-Qwen3-8B-AWQ}
+  EMBEDDING_MODEL_NAME: ${EMBEDDING_MODEL_NAME:-Qwen/Qwen3-Embedding-0.6B}
+  EMBEDDING_DIMENSION: ${EMBEDDING_DIMENSION:-1024}
   JWT_SECRET: ${JWT_SECRET}
-  LOCAL_MODEL_NAME: ${LOCAL_MODEL_NAME:-QwQ-32B-AWQ}
 ```
+
+The API service adds `DATABASE_URL: postgresql://ttwatch_app:${APP_DB_PASSWORD}@postgres:5432/${POSTGRES_DB:-ttwatch}` and `CORS_ORIGINS`.
+
+The worker services add `DATABASE_URL: postgresql://ttwatch_worker:${WORKER_DB_PASSWORD}@postgres:5432/${POSTGRES_DB:-ttwatch}`.
 
 ### Health Checks
 
 Every infrastructure service has a Docker health check:
 
-| Service | Health Check | Interval | Retries |
-|---------|-------------|----------|---------|
-| PostgreSQL | `pg_isready -U postgres` | 10s | 5 |
-| Qdrant | HTTP GET `:6333/readyz` | 10s | 5 |
-| Redis | `redis-cli ping` | 10s | 5 |
-| MinIO | `mc ready local` | 10s | 5 |
-| SearXNG | HTTP GET `:8080/healthz` | 10s | 5 |
-| vLLM | HTTP GET `:8000/health` | 30s | 30 (15 min startup) |
-| Embedder | HTTP GET `:8001/health` | 15s | 20 (5 min startup) |
+| Service | Health Check | Interval | Retries | Start Period |
+|---------|-------------|----------|---------|-------------|
+| PostgreSQL | `pg_isready -U postgres` | 5s | 5 | — |
+| Qdrant | TCP check `:6333` | 5s | 5 | — |
+| Redis | `redis-cli ping` | 5s | 5 | — |
+| MinIO | HTTP GET `:9000/minio/health/live` | 10s | 5 | — |
+| SearXNG | `wget --spider :8080/healthz` | 10s | 3 | — |
+| API | HTTP GET `:8080/health` | 10s | 5 | — |
+| Worker-IO | `celery inspect ping --timeout 10` | 30s | 3 | 30s |
+| Worker-CPU | `celery inspect ping --timeout 10` | 30s | 3 | 30s |
+| Scheduler | `pgrep -f celery` | 30s | 3 | 15s |
+| Frontend | `wget --spider :3000` | 10s | 5 | 15s |
+| vLLM | HTTP GET `:8000/health` | 10s | 10 | 120s |
+| vLLM-Fast | HTTP GET `:8000/health` | 15s | 10 | 120s |
+| Embedder | HTTP GET `:8001/health` | 10s | 5 | 60s |
 
 ### Makefile Targets
-
-The `Makefile` provides 22 targets:
 
 | Target | Command |
 |--------|---------|
 | `dev` | Dev mode (no GPU) |
 | `dev-gpu` | Dev mode with GPU services |
-| `prod` / `gpu` | Production GPU-colocated |
+| `prod` | Production (no GPU, detached) |
+| `gpu` | Production GPU-colocated |
 | `lan` | LAN-distributed main node |
 | `cloud` | Cloud LLM mode |
 | `gpu-node` | Standalone GPU node |
@@ -293,7 +318,7 @@ The `Makefile` provides 22 targets:
 | `migrate-new` | Create new migration revision |
 | `backup` / `restore` | PostgreSQL backup/restore |
 | `shell-api` / `shell-db` | Interactive shells |
-| `health` | Check all service health |
+| `health` | Check all service health via `/health/services` |
 | `create-admin` | Create admin user |
 | `seed-topics` | Seed sample topics |
 | `cleanup-data` / `cleanup-data-dry` | Run data cleanup script |
@@ -311,6 +336,7 @@ The `Makefile` provides 22 targets:
 | `update.sh` | `scripts/update.sh` | `git pull`, rebuild, migrate, restart |
 | `benchmark-gpu.py` | `scripts/benchmark-gpu.py` | Benchmarks vLLM inference throughput |
 | `cleanup_bad_data.py` | `scripts/cleanup_bad_data.py` | Cleans articles with `<think>` tags, CoT remnants, or placeholder summaries; supports `--dry-run` |
+| `ttwatch-diagnose.sh` | `scripts/ttwatch-diagnose.sh` | Comprehensive system diagnostic (12 sections: containers, connectivity, DB state, queues, logs, Qdrant, MinIO, env, E2E test) |
 
 ---
 
@@ -330,7 +356,7 @@ TTwatch enforces tenant isolation at the database level using PostgreSQL RLS. Ev
 
 ### RLS Policies
 
-15 user-scoped tables have RLS enabled with two policies each:
+16 user-scoped tables have RLS enabled with two policies each:
 
 **Policy: `user_isolation` (FOR ALL TO `ttwatch_app`)**
 ```sql
@@ -348,6 +374,7 @@ Tables with RLS policies:
 - `entities`, `entity_article_map`, `entity_cluster_map`
 - `sentiment_history`, `saved_queries`, `briefings`
 - `asset_mappings`, `investment_analyses`, `watchlist_items`, `price_alerts`, `correlation_signals`
+- `llm_task_config`
 
 ### Tables WITHOUT RLS (Shared Data)
 
@@ -359,7 +386,7 @@ These tables contain shared reference data that all users can read:
 
 ### RLS Context Setting
 
-**API side** (`services/api/app/deps.py:106-108`):
+**API side** (`services/api/app/deps.py`):
 ```python
 validated_id = str(uuid.UUID(str(user.id)))
 await db.execute(text(
@@ -367,7 +394,7 @@ await db.execute(text(
 ))
 ```
 
-**Worker side** (`services/worker/worker/rls.py:34-37`):
+**Worker side** (`services/worker/worker/rls.py`):
 ```python
 validated_id = str(uuid.UUID(user_id))
 with db_session() as session:
@@ -405,6 +432,8 @@ users (1) ----< topics (1) ----< articles >---- clusters
   +----< investment_analyses ----> market_data_cache
   |
   +----< correlation_signals
+  |
+  +----< llm_task_config
 ```
 
 ### Table Definitions
@@ -752,16 +781,30 @@ Unique constraint: `(user_id, entity_id, resolved_symbol)`
 - `momentum_confirmation_bullish` - Positive sentiment + rising price
 - `momentum_confirmation_bearish` - Negative sentiment + falling price
 
+#### `llm_task_config`
+
+| Column | Type | Constraints | Description |
+|--------|------|------------|-------------|
+| `id` | UUID | PK | |
+| `user_id` | UUID | FK `users.id` ON DELETE CASCADE | |
+| `task_category` | TEXT | NOT NULL, UNIQUE(user_id, task_category) | One of 10 task categories |
+| `model_target` | TEXT | default `"auto"`, NOT NULL | `primary`, `fast`, or `auto` |
+| `created_at` | TIMESTAMPTZ | | |
+| `updated_at` | TIMESTAMPTZ | | |
+
+**Task categories:** `summarization`, `sentiment`, `relevance`, `entity_extraction`, `ticker_resolution`, `briefing`, `investment_analysis`, `coverage_gaps`, `search_planning`, `correlation`
+
 ### Migrations
 
 | Migration | Description |
 |-----------|-------------|
-| `001_auth_tables.py` | `users`, `api_keys`, `refresh_tokens` with indexes |
-| `002_intelligence_tables.py` | `topics`, `sources`, `clusters`, `articles`, `entities`, `entity_article_map`, `entity_cluster_map`, `sentiment_history`, `saved_queries`, `briefings` |
-| `003_investment_tables.py` | `ticker_reference`, `theme_etf_map`, `market_data_cache`, `price_history`, `asset_mappings`, `investment_analyses`, `watchlist_items`, `price_alerts`, `correlation_signals` |
-| `004_enable_rls.py` | Enables RLS on 15 user-scoped tables, creates `user_isolation` + `worker_bypass` policies |
-| `005_app_grants.py` | Grants for `ttwatch_app`: CRUD on user tables, SELECT on shared tables |
-| `006_worker_grants.py` | Grants for `ttwatch_worker`: ALL on all tables, USAGE on sequences, ALTER DEFAULT PRIVILEGES |
+| `001_create_users_and_auth.py` | `users`, `api_keys`, `refresh_tokens` with indexes |
+| `002_create_intelligence_tables.py` | `topics`, `sources`, `clusters`, `articles`, `entities`, `entity_article_map`, `entity_cluster_map`, `sentiment_history`, `saved_queries`, `briefings` |
+| `003_create_investment_tables.py` | `ticker_reference`, `theme_etf_map`, `market_data_cache`, `price_history`, `asset_mappings`, `investment_analyses`, `watchlist_items`, `price_alerts`, `correlation_signals` |
+| `004_add_rls_policies.py` | Enables RLS on 15 user-scoped tables, creates `user_isolation` + `worker_bypass` policies, `FORCE ROW LEVEL SECURITY` |
+| `005_grants_app_role.py` | Grants for `ttwatch_app`: CRUD on user tables, SELECT on shared tables |
+| `006_grants_worker_role.py` | Grants for `ttwatch_worker`: ALL on all tables, USAGE on sequences, ALTER DEFAULT PRIVILEGES |
+| `007_create_llm_task_config.py` | `llm_task_config` table with RLS policies and grants for both app and worker roles |
 
 ---
 
@@ -781,7 +824,7 @@ TTwatch supports two authentication methods:
 
 #### 2. API Key (Header: `X-API-Key`)
 
-- **Format**: `tw_live_` prefix + random suffix (e.g., `tw_live_abc123def456...`)
+- **Format**: `tw_live_` prefix + short ID + random suffix (e.g., `tw_live_abc123def456...`)
 - **Storage**: Only the prefix (first 14 chars) and SHA-256 hash of the full key are stored
 - **Scopes**: `["read", "write", "search"]` (configurable per key)
 - **Rate Limit**: 60 requests/minute per key (configurable per key)
@@ -792,7 +835,7 @@ TTwatch supports two authentication methods:
 **Registration** (`POST /auth/register`):
 1. Validate email format and password strength (10+ chars, uppercase, lowercase, digit)
 2. Hash password with Argon2id (time_cost=3, memory_cost=64MB, parallelism=4)
-3. Create user record (handles concurrent duplicate email gracefully)
+3. Create user record (handles concurrent duplicate email gracefully via UniqueViolationError)
 4. Generate access + refresh token pair
 
 **Login** (`POST /auth/login`):
@@ -800,7 +843,7 @@ TTwatch supports two authentication methods:
 2. Verify password with Argon2id (auto-rehash if parameters changed)
 3. Update `last_login_at`
 4. Generate token pair
-5. Cap active refresh tokens at 10 (delete oldest excess)
+5. Cap active refresh tokens at 10 (delete oldest excess, only counting non-expired tokens)
 
 **Token Refresh** (`POST /auth/refresh`):
 1. Hash provided refresh token with SHA-256
@@ -852,7 +895,7 @@ await db.execute(text(
 
 ## 8. API Reference
 
-Base URL: `http://localhost:8000`
+Base URL: `http://localhost:8080`
 
 All authenticated endpoints require either:
 - `Authorization: Bearer <jwt_access_token>` header, OR
@@ -862,11 +905,10 @@ All authenticated endpoints require either:
 
 #### `GET /health`
 Basic health check. No authentication required.
-
 **Response**: `{"status": "ok"}`
 
-#### `GET /health/extended`
-Extended health check with service status (PostgreSQL, Redis, Qdrant, MinIO, vLLM, Embedder).
+#### `GET /health/services`
+Extended health check with service status (PostgreSQL, Redis, Qdrant, MinIO, vLLM, vLLM-Fast, Embedder, SearXNG).
 
 ### Auth
 
@@ -906,7 +948,7 @@ Get a single topic by ID.
 **Errors**: 404
 
 #### `PUT /api/topics/{topic_id}`
-Update a topic. Supports partial updates via `model_fields_set`.
+Update a topic. Supports partial updates via `model_fields_set`. Config is merged (not replaced).
 **Body**: Any subset of `{"name", "icon", "config", "refresh_interval_minutes"}`
 **Errors**: 404
 
@@ -916,13 +958,21 @@ Delete a topic and all associated data (cascades). Qdrant vectors cleaned up by 
 **Errors**: 404
 
 #### `POST /api/topics/{topic_id}/search`
-Manually trigger a new search. Rate-limited to once per 5 minutes (Redis lock key `ttwatch:search_lock:{topic_id}`).
+Manually trigger a new search. Rate-limited to once per 5 minutes (Redis lock key `ttwatch:search_lock:{topic_id}`, TTL 300s).
 **Response**: 202 `{"status": "search_dispatched", "topic_id": "..."}`
 **Errors**: 404, 429 (cooldown)
 
+#### `POST /api/topics/{topic_id}/search/cancel`
+Cancel an in-progress search.
+**Response**: `{"status": "cancelled"}`
+
 #### `GET /api/topics/{topic_id}/search-status`
 Get current search status from Redis cache.
-**Response**: `{"status": "searching"|"completed"|"error"|"idle", ...}`
+**Response**: `{"status": "generating_queries"|"searching"|"processing"|"completed"|"error"|"idle", ...}`
+
+#### `GET /api/topics/{topic_id}/processing-status`
+Get detailed processing progress for a topic.
+**Response**: `{"phase": "...", "total_articles": N, "embedded": N, "summarized": N, ...}`
 
 #### `GET /api/topics/{topic_id}/clusters`
 List clusters for a topic, ordered by `trend_score` descending.
@@ -935,12 +985,13 @@ Get a single cluster.
 
 #### `GET /api/clusters/{cluster_id}/articles`
 List articles belonging to a cluster.
+**Query params**: `limit` (default 50, max 200), `offset` (default 0)
 
 ### Articles
 
-#### `GET /api/articles`
+#### `GET /api/topics/{topic_id}/articles`
 List articles with filtering.
-**Query params**: `topic_id` (required), `cluster_id`, `is_duplicate` (bool), `published_after` (ISO datetime), `published_before` (ISO datetime), `min_relevance` (float, default 0.3), `limit` (default 50), `offset` (default 0)
+**Query params**: `cluster_id`, `is_duplicate` (bool), `published_after` (ISO datetime), `published_before` (ISO datetime), `min_relevance` (float, default 0.3), `limit` (default 50, max 200), `offset` (default 0)
 
 #### `GET /api/articles/{article_id}`
 Get a single article with full details.
@@ -952,33 +1003,31 @@ List entities extracted from an article.
 
 #### `POST /api/search`
 Semantic search via Qdrant vector similarity.
-**Body**: `{"query": "...", "topic_id": "...", "limit": 10}`
+**Body**: `{"query": "...", "topic_id": "...", "limit": 20}`
 **Response**: Array of articles with similarity scores.
 
 ### Briefings
 
-#### `GET /api/briefings`
+#### `GET /api/topics/{topic_id}/briefings`
 List briefings for a topic.
-**Query params**: `topic_id` (required), `limit` (default 10)
 
 #### `GET /api/briefings/{briefing_id}`
 Get a single briefing with full content.
 
-#### `POST /api/briefings/generate`
+#### `POST /api/topics/{topic_id}/briefings/generate`
 Manually trigger briefing generation for a topic.
-**Body**: `{"topic_id": "..."}`
-**Response**: 202
+**Response**: 202 `{"task_id": "...", "status": "..."}`
 
 ### Entities
 
-#### `GET /api/entities`
+#### `GET /api/topics/{topic_id}/entities`
 List entities for a topic.
-**Query params**: `topic_id` (required), `type` (filter by entity type), `limit`, `offset`
+**Query params**: `type` (filter by entity type), `limit`, `offset`
 
-#### `GET /api/entities/graph`
+#### `GET /api/topics/{topic_id}/entity-graph`
 Get entity co-occurrence graph for visualization.
-**Query params**: `topic_id` (required)
-**Response**: `{"nodes": [...], "edges": [...]}`
+**Query params**: `min_articles` (default 1), `min_cooccurrence` (default 2)
+**Response**: `{"entities": [...], "edges": [...]}`
 Edges are computed from entities sharing articles (co-occurrence via `entity_article_map`).
 
 #### `GET /api/entities/{entity_id}`
@@ -989,24 +1038,23 @@ List articles mentioning an entity.
 
 ### Sentiment
 
-#### `GET /api/sentiment/overview`
+#### `GET /api/topics/{topic_id}/sentiment`
 Latest sentiment scores per cluster for a topic.
-**Query params**: `topic_id` (required)
 
-#### `GET /api/sentiment/history`
+#### `GET /api/topics/{topic_id}/sentiment/history`
 Sentiment history timeline for a cluster.
-**Query params**: `topic_id` (required), `cluster_keyword` (optional), `days` (default 30)
+**Query params**: `cluster_keyword` (optional), `limit` (default 90, max 365)
 Uses `cluster_keyword` for lookup, making it resilient to cluster ID changes from reclustering.
 
 ### Sources
 
-#### `GET /api/sources`
+#### `GET /api/topics/{topic_id}/sources`
 List sources for a topic.
-**Query params**: `topic_id` (required)
 
-#### `POST /api/sources`
+#### `POST /api/topics/{topic_id}/sources`
 Add a custom source.
-**Body**: `{"topic_id": "...", "name": "...", "url": "...", "source_type": "rss"}`
+**Body**: `{"name": "...", "url": "...", "source_type": "rss", "enabled": true, "config": {}}`
+**Errors**: 409 (duplicate URL per user+topic)
 
 #### `PUT /api/sources/{source_id}`
 Update a source.
@@ -1016,45 +1064,43 @@ Delete a source.
 
 ### Saved Queries
 
-#### `GET /api/queries`
+#### `GET /api/topics/{topic_id}/queries`
 List saved queries for a topic.
-**Query params**: `topic_id` (required)
 
-#### `POST /api/queries`
+#### `POST /api/topics/{topic_id}/queries`
 Create a saved query.
-**Body**: `{"topic_id": "...", "query_text": "...", "schedule": "on_refresh"}`
+**Body**: `{"query_text": "...", "schedule": "on_refresh"}`
 
 #### `DELETE /api/queries/{query_id}`
 Delete a saved query.
 
 ### Investment
 
-#### `GET /api/investment/watchlist`
-List user's watchlist items.
+#### `GET /api/topics/{topic_id}/watchlist`
+List user's watchlist items for a topic.
 
-#### `POST /api/investment/watchlist`
+#### `POST /api/topics/{topic_id}/watchlist`
 Add a symbol to watchlist.
-**Body**: `{"symbol": "...", "asset_type": "equity|etf|crypto", "topic_id": "...", "notes": "...", "target_price": 150.00, "stop_loss": 120.00}`
+**Body**: `{"symbol": "...", "asset_type": "equity|etf|crypto", "notes": "...", "target_price": 150.00, "stop_loss": 120.00}`
+**Errors**: 409 (symbol already in watchlist)
 
-#### `DELETE /api/investment/watchlist/{item_id}`
+#### `DELETE /api/watchlist/{item_id}`
 Remove from watchlist.
 
-#### `GET /api/investment/analyses`
-List investment analyses.
-**Query params**: `topic_id`, `symbol`, `limit`
+#### `GET /api/topics/{topic_id}/analyses`
+List investment analyses for a topic.
 
-#### `GET /api/investment/correlation-signals`
-List correlation signals.
-**Query params**: `topic_id` (required), `symbol`, `limit`
+#### `GET /api/topics/{topic_id}/correlation-signals`
+List correlation signals for a topic (limit 50).
 
-#### `GET /api/investment/price-alerts`
-List user's price alerts.
-
-#### `POST /api/investment/price-alerts`
+#### `POST /api/price-alerts`
 Create a price alert.
 **Body**: `{"symbol": "...", "condition": "above|below|crosses_above|crosses_below", "threshold": 150.00}`
 
-#### `DELETE /api/investment/price-alerts/{alert_id}`
+#### `GET /api/price-alerts`
+List user's price alerts.
+
+#### `DELETE /api/price-alerts/{alert_id}`
 Delete a price alert.
 
 ### Market Data
@@ -1064,34 +1110,49 @@ Get current market data for a symbol from cache.
 
 #### `GET /api/market-data/{symbol}/history`
 Get price history for a symbol.
-**Query params**: `days` (default 30)
+**Query params**: `limit` (default 90, max 365)
 
 ### Users
 
-#### `GET /api/users/me`
+#### `GET /api/me`
 Get current user profile.
 
-#### `PUT /api/users/me`
+#### `PUT /api/me`
 Update profile (display_name).
 
-#### `GET /api/users/me/api-keys`
+#### `GET /api/me/api-keys`
 List user's API keys (shows prefix and label, not the full key).
 
-#### `POST /api/users/me/api-keys`
-Create a new API key. Returns the full key exactly once.
+#### `POST /api/me/api-keys`
+Create a new API key. Returns the full key exactly once. Enforces `max_api_keys` (default 5).
 **Body**: `{"label": "...", "scopes": ["read","write","search"]}`
 **Response**: `{"key": "tw_live_...", "prefix": "tw_live_...", "label": "..."}`
 
-#### `DELETE /api/users/me/api-keys/{key_id}`
+#### `DELETE /api/me/api-keys/{key_id}`
 Revoke an API key.
+
+### Models
+
+#### `GET /api/models/status`
+Get LLM model health status for primary and fast models.
+**Response**: `{"models": [...], "gpu_mode": "local"|"cloud", "provider": "..."}`
+
+#### `GET /api/models/task-routing`
+Get current task routing configuration (10 task categories with model assignments).
+**Response**: `{"entries": [{"task_category": "...", "model_target": "fast"|"primary"|"auto", ...}]}`
+
+#### `PUT /api/models/task-routing`
+Update task routing for one or more categories.
+**Body**: `{"changes": [{"task_category": "briefing", "model_target": "primary"}]}`
 
 ### Admin
 
 #### `GET /api/admin/versions`
-Get service version status (current vs. latest available).
+Get service version status (current vs. latest available). Admin only (403 for non-admins).
+Cached for 24 hours in Redis.
 
 #### `POST /api/admin/versions/check`
-Trigger a version check against upstream registries (GitHub, DockerHub, HuggingFace).
+Trigger a version check against upstream registries (GitHub, DockerHub, HuggingFace). Admin only.
 
 ### WebSocket
 
@@ -1099,7 +1160,7 @@ Trigger a version check against upstream registries (GitHub, DockerHub, HuggingF
 Real-time updates connection.
 
 **Protocol**:
-1. Client connects to `ws://host:8000/ws`
+1. Client connects to `ws://host:8080/ws`
 2. Server accepts and waits for auth message (10s timeout)
 3. Client sends: `{"type": "auth", "token": "<jwt_access_token>"}`
 4. Server verifies JWT and responds: `{"type": "connected", "user_id": "..."}`
@@ -1109,6 +1170,7 @@ Real-time updates connection.
 **Server-pushed events**:
 - `{"type": "price_alert", "symbol": "...", "condition": "...", ...}` - Triggered price alert
 - `{"type": "search_completed", "topic_id": "...", "articles_found": N}` - Search completion
+- `{"type": "search_progress", "topic_id": "...", "status": "...", ...}` - Search progress update
 
 **Close codes**:
 - `4001` - Auth timeout or invalid credentials
@@ -1158,13 +1220,27 @@ app.conf.task_routes = {
 
 All other tasks default to `ttwatch:default` (IO pool).
 
+### LLM Task Routing
+
+Workers use the `llm_router` module (`services/worker/worker/llm_router.py`) to route LLM calls to the appropriate model:
+
+```python
+def get_llm_for_task(session, user_id: str, task_category: str) -> SyncLLMClient:
+```
+
+1. Queries `llm_task_config` table for user-specific routing
+2. Falls back to hardcoded defaults (all tasks default to `fast` model)
+3. Returns `_fast` (Qwen3-8B-AWQ with thinking disabled) or `_primary` (Qwen3-32B-AWQ)
+4. For `auto` target: returns fast client (which itself falls back to primary if unavailable)
+
 ### Task Registry
 
-20 task modules, 21+ named tasks:
+20 task modules, 24+ named tasks:
 
 | Task Name | Module | Queue | Retries | Description |
 |-----------|--------|-------|---------|-------------|
 | `run_topic_search` | `search` | default | 0 | Query SearXNG, dispatch ingestion |
+| `detect_stalled_pipelines` | `search` | default | 0 | Force-complete stuck processing pipelines |
 | `generate_search_queries` | `search_plan` | default | 2 | LLM decomposes topic into 3-6 queries |
 | `ingest_article` | `ingest` | default | 2 | Fetch, extract, dedup, store, fan-out |
 | `embed_article` | `embed` | default | 3 | Generate embedding, upsert Qdrant, semantic dedup |
@@ -1207,10 +1283,11 @@ All other tasks default to `ttwatch:default` (IO pool).
 | `cleanup-expired-refresh-tokens` | `cleanup_expired_refresh_tokens` | Daily at 02:30 |
 | `cleanup-orphaned-qdrant` | `cleanup_orphaned_qdrant_points` | Daily at 04:00 |
 | `check-service-versions` | `check_service_versions` | Daily at 06:30 |
+| `detect-stalled-pipelines` | `detect_stalled_pipelines` | Every 2 minutes |
 
 ### Periodic Task Dispatch Pattern
 
-The `schedule_*` tasks in `services/worker/worker/tasks/periodic.py` query all topics that need processing and dispatch individual tasks per topic. For example, `schedule_searches` finds topics where `next_refresh_at <= now` and dispatches `run_topic_search` for each.
+The `schedule_*` tasks in `services/worker/worker/tasks/periodic.py` query all active users and topics, then dispatch individual tasks per user/topic pair. For example, `schedule_searches` finds all active user/topic pairs and dispatches `run_topic_search` for each. The `refresh_market_data` task discovers symbols from both `watchlist_items` and `asset_mappings` (auto-resolved from entities) to ensure market data is available for investment analyses.
 
 ### Worker Database Access
 
@@ -1243,6 +1320,16 @@ The `@with_rls_context` decorator (`services/worker/worker/rls.py`) handles both
 4. Sets `SET LOCAL ttwatch.current_user_id = '{validated_id}'`
 5. Passes the session as `session=` keyword argument to the wrapped function
 
+### Pipeline Stall Detection
+
+The `detect_stalled_pipelines` task (`services/worker/worker/tasks/search.py`) runs every 2 minutes as a safety net:
+
+1. Scans all `ttwatch:search_status:*` Redis keys
+2. Identifies pipelines stuck in `processing` status for over 5 minutes (`_STALL_TIMEOUT`)
+3. If clustering hasn't been dispatched yet, dispatches `recluster_topic`
+4. If clustering was already dispatched but didn't complete, forces the pipeline to `completed` status
+5. Publishes `search_completed` event via Redis pub/sub
+
 ---
 
 ## 10. Core Processing Pipeline
@@ -1261,12 +1348,12 @@ Topic Creation
       v (for each unique URL)
 [ingest_article] --- Fetch, extract, store, 3-layer dedup
       |
-      +---> [summarize_article]     --- LLM 2-sentence summary
-      +---> [embed_article]         --- Vectorize + Qdrant upsert + semantic dedup
-      +---> [extract_entities]      --- LLM NER + entity-article mapping
-      |         +---> [resolve_entity_ticker]  --- Ticker symbol resolution
-      +---> [classify_sentiment]    --- LLM sentiment classification
-      +---> [score_relevance]       --- LLM topic relevance scoring
+      +---> [embed_article]         --- Vectorize + Qdrant upsert + semantic dedup (countdown=1)
+      +---> [summarize_article]     --- LLM 2-sentence summary (countdown=1)
+      +---> [classify_sentiment]    --- LLM sentiment classification (countdown=3)
+      +---> [score_relevance]       --- LLM topic relevance scoring (countdown=6)
+      +---> [extract_entities]      --- LLM NER + entity-article mapping (countdown=10)
+                +---> [resolve_entity_ticker]  --- Ticker symbol resolution
 
 
 Periodic (every 2h):
@@ -1279,6 +1366,9 @@ Periodic (every 6h):
 
 Periodic (every 12h):
 [detect_coverage_gaps] --- LLM gap analysis
+
+Safety (every 2min):
+[detect_stalled_pipelines] --- Force-complete stuck pipelines
 ```
 
 ### Step 1: Search Query Generation
@@ -1309,13 +1399,16 @@ The generated queries are stored in `topic.config["search_queries"]` and then `r
 For each search query (LLM-generated + user-configured `search_terms`):
 1. Query SearXNG at `/search?q={query}&format=json`
 2. Collect results, deduplicating by URL within the batch
-3. Dispatch `ingest_article` for each unique URL
-4. Update Redis search status (searching -> completed) and publish to `ttwatch:search:completed` pub/sub
+3. Track per-query progress in Redis (`queries_total`, `queries_completed`)
+4. Dispatch `ingest_article` for each unique URL
+5. Set processing counters in Redis for progress tracking
+6. Transition search status through phases: `searching` -> `processing` -> `completed`
+7. Publish progress events to `ttwatch:search:progress` pub/sub channel
 
 ### Step 3: Article Ingestion
 
 **File**: `services/worker/worker/tasks/ingest.py`
-**Task**: `ingest_article`
+**Task**: `ingest_article` (bind=True, max_retries=2)
 
 Three-layer deduplication:
 
@@ -1343,8 +1436,14 @@ Catches mirror sites or syndicated content with identical text but different URL
 **Layer 3 -- Semantic Dedup (Qdrant, in embed_article)**:
 After embedding, searches for vectors with cosine similarity > 0.92 within the same user+topic scope. If found, marks the article as `is_duplicate=True` with `duplicate_of` pointing to the original.
 
-**Content extraction** uses trafilatura with `favor_precision=True`:
+**Content extraction** uses trafilatura with custom config:
 ```python
+_traf_config = configparser.ConfigParser()
+_traf_config.read_dict({"DEFAULT": {
+    "DOWNLOAD_TIMEOUT": "10",
+    "MAX_REDIRECTS": "2",
+}})
+
 extracted = trafilatura.extract(
     downloaded,
     include_comments=False,
@@ -1354,16 +1453,18 @@ extracted = trafilatura.extract(
 )
 ```
 
-Articles with fewer than 100 characters of extracted text are rejected.
+Articles with fewer than 100 characters of extracted text are rejected. Title and `published_at` are extracted from document metadata via `trafilatura.extract_metadata()`.
 
 **Raw storage**: Full extracted text is stored in MinIO at path `{user_id}/{topic_id}/{content_hash}.txt`.
 
-**Fan-out**: After successful ingestion, 5 tasks are dispatched in parallel:
-1. `summarize_article` -- LLM summary
-2. `embed_article` -- Vector embedding + semantic dedup
-3. `extract_entities` -- NER extraction
-4. `classify_sentiment` -- Sentiment score
-5. `score_relevance` -- Topic relevance score
+**Skipped article tracking**: When an article is deduplicated or fails to fetch, `_track_skipped_article()` decrements the expected count and checks if the processing pipeline is effectively complete. This prevents pipeline stalls when most articles are duplicates.
+
+**Fan-out**: After successful ingestion, 5 tasks are dispatched with staggered countdowns to ensure the ingest transaction commits first:
+1. `embed_article` (countdown=1s)
+2. `summarize_article` (countdown=1s)
+3. `classify_sentiment` (countdown=3s)
+4. `score_relevance` (countdown=6s)
+5. `extract_entities` (countdown=10s)
 
 ### Step 4: Summarization
 
@@ -1389,6 +1490,7 @@ raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
 4. Upserts to Qdrant with point ID = article UUID (critical contract: `recluster_topic` depends on this identity)
 5. Payload includes `user_id`, `topic_id`, `title`, `source`, `ingested_at` for filtering
 6. Performs Layer 3 semantic dedup (cosine > 0.92 threshold)
+7. Increments Redis processing counter and auto-dispatches `recluster_topic` when embedded count reaches 80% of expected
 
 ### Step 6: Entity Extraction
 
@@ -1438,7 +1540,7 @@ Articles below this threshold are excluded from clustering to prevent noise clus
 ### Step 9: Clustering
 
 **File**: `services/worker/worker/tasks/cluster.py`
-**Task**: `recluster_topic` (runs every 2 hours)
+**Task**: `recluster_topic` (runs every 2 hours and auto-triggered after embedding)
 
 **Two-phase Qdrant scroll**:
 1. **Phase 1**: Scroll ALL points (no vectors) for sorting by `ingested_at`, cap at `MAX_CLUSTER_ARTICLES = 2000`
@@ -1521,12 +1623,13 @@ For each cluster, computes daily average sentiment and article count. Uses `ON C
 
 ### Technology
 
-- **Framework**: Next.js 14.2.29 with App Router
-- **UI**: React 18, Tailwind CSS with dark theme
-- **State**: Zustand store
-- **HTTP**: Axios with JWT interceptors
-- **Visualizations**: D3.js (force simulations), Recharts (charts)
-- **TypeScript**: Full type coverage
+- **Framework**: Next.js ^14.2.0 with App Router
+- **UI**: React 18.3.0, Tailwind CSS ^3.4.0 with dark theme
+- **State**: Zustand ^4.5.0
+- **HTTP**: Axios ^1.7.0 with JWT interceptors
+- **Visualizations**: D3.js ^7.9.0 (force simulations), Recharts ^2.12.0 (charts)
+- **Icons**: Lucide React ^0.400.0
+- **TypeScript**: ^5.5.0 with full type coverage
 
 ### File Structure
 
@@ -1535,6 +1638,7 @@ services/frontend/
   src/
     app/
       layout.tsx              # Root layout (global styles)
+      page.tsx                # Root page
       login/page.tsx          # Login page
       register/page.tsx       # Registration page
       dashboard/
@@ -1544,6 +1648,7 @@ services/frontend/
         investment/page.tsx   # Investment dashboard
         search/page.tsx       # Semantic search
         settings/page.tsx     # User settings, API keys
+        models/page.tsx       # AI model status and task routing
         topics/
           new/page.tsx        # Create topic
           [id]/page.tsx       # Topic detail (clusters, articles)
@@ -1583,12 +1688,14 @@ interface AppState {
   clusters: Cluster[];
   latestBriefing: Briefing | null;
   pendingUpdates: number;
+  selectedTopicId: string | null;
   setUser: (user: User | null) => void;
   setTopics: (topics: Topic[]) => void;
+  selectTopic: (id: string | null) => void;
   setClusters: (clusters: Cluster[]) => void;
   setLatestBriefing: (briefing: Briefing | null) => void;
   incrementUpdates: () => void;
-  resetUpdates: () => void;
+  clearUpdates: () => void;
 }
 ```
 
@@ -1597,9 +1704,9 @@ interface AppState {
 **File**: `services/frontend/src/lib/api-client.ts`
 
 Axios instance configured with:
-- Base URL from `NEXT_PUBLIC_API_URL` or `http://localhost:8000`
+- Base URL: SSR-safe (Docker internal `http://api:8080` for server-side, `NEXT_PUBLIC_API_URL` for client-side)
 - Request interceptor: attaches `Authorization: Bearer <token>` from localStorage
-- Response interceptor: on 401 error, attempts token refresh via `/auth/refresh`, then retries the original request. If refresh fails, clears tokens and redirects to `/login`.
+- Response interceptor: on 401 error, attempts token refresh via `/auth/refresh` with deduplication of concurrent refresh calls, then retries the original request. If refresh fails, clears tokens and redirects to `/login`.
 
 ### WebSocket Hook
 
@@ -1609,8 +1716,8 @@ Custom React hook providing:
 - Automatic connection with JWT auth message
 - Exponential backoff reconnection (1s, 2s, 4s, 8s... up to 30s)
 - Pong response to server ping messages
-- `connected` status and `lastMessage` state
-- `onMessage` callback for parent components
+- Prevents reconnect on code 4001 (auth fail) or 1000 (intentional close)
+- Returns `{ connected, lastMessage, send }`
 
 ### Dashboard Layout
 
@@ -1622,14 +1729,24 @@ Wraps all dashboard pages with:
 3. WebSocket connection -- established once, handles `onMessage` to increment `pendingUpdates` counter (for any message type except `connected` and `ping`)
 4. User profile fetch on mount via `getMe()`
 
+### Models Page
+
+**File**: `services/frontend/src/app/dashboard/models/page.tsx`
+
+Displays:
+- Model status cards for primary and fast models (health polling every 30 seconds)
+- Task routing configuration table with 10 task categories
+- Ability to switch each task between `fast`, `primary`, and `auto` model targets
+
 ### Design System
 
 **File**: `services/frontend/src/lib/design-tokens.ts`
 
 Dark theme with:
 - Surface base: `#0f1117`
-- Surface elevated: `#1a1d27`
-- Surface overlay: `#252833`
+- Surface raised: `#161923`
+- Surface overlay: `#1e2130`
+- Border: `#2a2d3e`
 - Accent primary: `#3B82F6` (blue)
 - Accent success: `#10B981` (green)
 - Accent warning: `#F59E0B` (amber)
@@ -1637,13 +1754,20 @@ Dark theme with:
 - Text primary: `#F1F5F9`
 - Text secondary: `#94A3B8`
 
+**Cluster color palette** (15 colors):
+`#3B82F6`, `#10B981`, `#F59E0B`, `#EF4444`, `#8B5CF6`, `#EC4899`, `#06B6D4`, `#84CC16`, `#F97316`, `#6366F1`, `#14B8A6`, `#E11D48`, `#A855F7`, `#0EA5E9`, `#D946EF`
+
+**Sentiment color scale**: Red (-0.3+) -> Orange -> Gray (-0.1 to 0.1) -> Green -> Full green (0.3+)
+
+**Velocity colors**: surging (red), rising (amber), stable (gray), declining (blue)
+
 ### Key Visualizations
 
 **BubbleCluster** (`services/frontend/src/components/BubbleCluster.tsx`):
-D3 force-directed bubble chart where each bubble represents a cluster. Size is proportional to `article_count`, color matches the cluster's assigned color, and position is determined by force simulation (center gravity + collision avoidance).
+D3 force-directed bubble chart where each bubble represents a cluster. Size is proportional to `article_count`, color matches the cluster's assigned color, and position is determined by force simulation (center gravity + collision avoidance). Radius scale: 20-80px.
 
 **EntityNetwork** (`services/frontend/src/components/EntityNetwork.tsx`):
-D3 force graph showing entities as nodes (colored by type) and edges representing co-occurrence in articles. Uses the `/api/entities/graph` endpoint data.
+D3 force graph showing entities as nodes (colored by type) and edges representing co-occurrence in articles. Uses the `/api/topics/{topic_id}/entity-graph` endpoint data. Link distance: 100, charge strength: -150.
 
 **SentimentTimeline** (`services/frontend/src/components/SentimentTimeline.tsx`):
 Recharts line chart showing daily sentiment trends per cluster keyword over configurable time ranges.
@@ -1688,7 +1812,7 @@ Triggered only for entities of type `org`, `product`, or `technology`.
 
 **File**: `services/worker/worker/tasks/maintenance.py`
 
-**`fetch_market_data`** runs for each resolved symbol in watchlist items:
+**`fetch_market_data`** runs for each resolved symbol from both watchlists and asset mappings:
 - **Equities/ETFs**: Uses `yfinance` library. Fetches current price, volume, market cap, P/E ratio, EPS, dividend yield, beta, 52-week high/low, and 6 months of daily OHLCV history.
 - **Crypto**: Uses CoinGecko API (`/api/v3/coins/{id}/market_chart`). Converts coin symbols to CoinGecko IDs.
 - Uses `ON CONFLICT` (upsert) for both `market_data_cache` and `price_history`.
@@ -1791,26 +1915,27 @@ Frontend WebSocket -> Dashboard notification
 [ingest_article]
         |
         +-- Layer 1: Redis URL SET check
-        |       (fail: return "duplicate")
+        |       (fail: return "duplicate", track skipped)
         |
-        +-- trafilatura.fetch_url()
+        +-- trafilatura.fetch_url() with 10s timeout
         +-- trafilatura.extract(favor_precision=True)
-        |       (fail if < 100 chars)
+        |       (fail if < 100 chars, track skipped)
         |
         +-- Layer 2: SHA-256 content hash check vs PostgreSQL
-        |       (fail: return "duplicate")
+        |       (fail: return "duplicate", track skipped)
         |
         +-- MinIO: store raw text at {user}/{topic}/{hash}.txt
         +-- PostgreSQL: INSERT article record
         +-- Redis: SADD url to dedup set
         |
-        +---> [summarize_article]     -- LLM --> article.summary
         +---> [embed_article]         -- Embedder --> Qdrant upsert
         |         |                              + Layer 3: cosine > 0.92 semantic dedup
-        +---> [extract_entities]      -- LLM --> entities + entity_article_map
-        |         +---> [resolve_entity_ticker] -- LLM/ref --> asset_mappings
+        |         +-- Auto-dispatch recluster when embedded >= 80% expected
+        +---> [summarize_article]     -- LLM --> article.summary
         +---> [classify_sentiment]    -- LLM --> article.sentiment_score
         +---> [score_relevance]       -- LLM --> article.relevance_score
+        +---> [extract_entities]      -- LLM --> entities + entity_article_map
+                  +---> [resolve_entity_ticker] -- LLM/ref --> asset_mappings
 
 [Periodic: every 2h]
 [recluster_topic]
@@ -1865,6 +1990,7 @@ Frontend WebSocket -> Dashboard notification
         v
 [refresh_market_data] (every 30min)
         |
+        +-- Discovers symbols from watchlist_items AND asset_mappings
         +-- yfinance (equities/ETFs): price, volume, fundamentals, OHLCV
         +-- CoinGecko (crypto): price, market cap, volume
         |
@@ -1906,7 +2032,7 @@ Frontend WebSocket -> Dashboard notification
     |<-- {"type":"connected"} --------|                                |
     |                                 |                                |
     |                                 |<-- Redis pub/sub subscribe ----|
-    |                                 |    (alerts + search channels)  |
+    |                                 |    (alerts, search, progress)  |
     |                                 |                                |
     |                                 |        [price_alerts task runs]|
     |                                 |                                |
@@ -1914,6 +2040,13 @@ Frontend WebSocket -> Dashboard notification
     |                                 |     triggered", {...})         |
     |                                 |                                |
     |<-- {"type":"price_alert",...}----|                                |
+    |                                 |                                |
+    |                                 |      [search progress update]  |
+    |                                 |                                |
+    |                                 |<-- publish("ttwatch:search:    |
+    |                                 |     progress", {...})          |
+    |                                 |                                |
+    |<-- {"type":"search_progress"}----|                                |
     |                                 |                                |
     |<-- {"type":"ping"} -------------|                                |
     |-- {"type":"pong"} ------------->|                                |
@@ -1933,7 +2066,9 @@ All settings are managed via environment variables, loaded by Pydantic Settings 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `DATABASE_URL` | `postgresql://ttwatch_app:changeme@postgres:5432/ttwatch` | PostgreSQL connection string |
-| `POSTGRES_PASSWORD` | (required in `.env`) | PostgreSQL password for ttwatch_app role |
+| `POSTGRES_PASSWORD` | (required in `.env`) | PostgreSQL superuser password |
+| `APP_DB_PASSWORD` | (required in `.env`) | Password for `ttwatch_app` role |
+| `WORKER_DB_PASSWORD` | (required in `.env`) | Password for `ttwatch_worker` role |
 
 #### Redis
 
@@ -1955,8 +2090,10 @@ All settings are managed via environment variables, loaded by Pydantic Settings 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `LLM_PROVIDER` | `local` | `local` or `cloud` |
-| `VLLM_URL` | `http://vllm:8000/v1` | vLLM OpenAI-compatible endpoint |
-| `LOCAL_MODEL_NAME` | `Qwen2.5-32B-Instruct-AWQ` | Model name (used in vLLM path) |
+| `VLLM_URL` | `http://vllm:8000/v1` | Primary vLLM OpenAI-compatible endpoint |
+| `VLLM_FAST_URL` | `http://vllm-fast:8000/v1` | Fast vLLM endpoint for classification tasks |
+| `LOCAL_MODEL_NAME` | `Qwen3-32B-AWQ` | Primary model name (used in vLLM path) |
+| `FAST_MODEL_NAME` | `Qwen3-8B-AWQ` | Fast model name |
 | `CLOUD_LLM_PROVIDER` | `openai` | `openai`, `anthropic`, or `openrouter` |
 | `CLOUD_LLM_API_KEY` | (empty) | API key for cloud provider |
 | `CLOUD_LLM_MODEL` | `gpt-4o-mini` | Cloud model name |
@@ -1966,7 +2103,9 @@ All settings are managed via environment variables, loaded by Pydantic Settings 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `EMBEDDER_URL` | `http://embedder:8001` | Local embedding server |
+| `EMBEDDING_MODEL_NAME` | `Qwen/Qwen3-Embedding-0.6B` | Embedding model to load |
 | `EMBEDDING_DIMENSION` | `1024` | Vector dimension (1024 for Qwen3, 3072 for OpenAI large) |
+| `EMBEDDER_DEVICE` | `cuda` | Embedding device (`cuda` or `cpu`) |
 | `CLOUD_EMBEDDING_PROVIDER` | `openai` | Cloud embedding provider |
 | `CLOUD_EMBEDDING_MODEL` | `text-embedding-3-large` | Cloud embedding model |
 
@@ -1991,6 +2130,14 @@ All settings are managed via environment variables, loaded by Pydantic Settings 
 |----------|---------|-------------|
 | `JWT_SECRET` | `change-me` | HS256 signing key |
 | `CORS_ORIGINS` | `http://localhost:3000` | Comma-separated allowed origins |
+
+#### Frontend
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `NEXT_PUBLIC_API_URL` | `http://localhost:8080` | API base URL for client-side requests |
+| `NEXT_PUBLIC_WS_URL` | `ws://localhost:8080/ws` | WebSocket URL |
+| `INTERNAL_API_URL` | `http://api:8080` | API URL for server-side rendering |
 
 ### SearXNG Configuration
 
@@ -2027,36 +2174,49 @@ JSON format is enabled (required for programmatic access). Rate limiter is disab
 
 From `docker-compose.gpu.yml`:
 
-```yaml
-command: >
-  --model /models/${LOCAL_MODEL_NAME:-QwQ-32B-AWQ}
-  --quantization awq
-  --gpu-memory-utilization 0.85
-  --max-model-len 32768
-  --max-num-seqs 8
-  --enable-prefix-caching
-  --reasoning-parser deepseek_r1
+**Primary model (vllm)**:
+```
+--model /models/Qwen3-32B-AWQ
+--quantization awq_marlin
+--gpu-memory-utilization 0.65
+--max-model-len 8192
+--max-num-seqs 8
+--enable-prefix-caching
+--reasoning-parser deepseek_r1
 ```
 
-| Flag | Value | Purpose |
-|------|-------|---------|
-| `--quantization awq` | AWQ | 4-bit quantization for ~4x memory reduction |
-| `--gpu-memory-utilization 0.85` | 85% | GPU memory allocation (leaves 15% for system) |
-| `--max-model-len 32768` | 32K | Maximum context length |
-| `--max-num-seqs 8` | 8 | Maximum concurrent sequences |
-| `--enable-prefix-caching` | on | Cache common prompt prefixes |
-| `--reasoning-parser deepseek_r1` | DeepSeek-R1 | Parse reasoning output format |
+**Fast model (vllm-fast)**:
+```
+--model /models/Qwen3-8B-AWQ
+--quantization awq_marlin
+--gpu-memory-utilization 0.85
+--max-model-len 8192
+--max-num-seqs 16
+--enable-prefix-caching
+--disable-log-requests
+```
+
+| Flag | Primary | Fast | Purpose |
+|------|---------|------|---------|
+| `--quantization` | awq_marlin | awq_marlin | Optimized AWQ quantization kernel |
+| `--gpu-memory-utilization` | 0.65 | 0.85 | GPU memory allocation (shared GPU) |
+| `--max-model-len` | 8192 | 8192 | Maximum context length |
+| `--max-num-seqs` | 8 | 16 | Maximum concurrent sequences |
+| `--reasoning-parser` | deepseek_r1 | — | Parse reasoning output format |
+| `--disable-log-requests` | — | yes | Reduce logging for high-throughput |
+
+**GPU-node standalone** (`docker-compose.gpu-node.yml`) uses different settings: `--quantization awq --gpu-memory-utilization 0.85 --max-model-len 32768` (single model, full GPU).
 
 ### Embedder Configuration
 
 **File**: `services/embedder/server.py`
 
-- Model: `Qwen/Qwen3-Embedding-0.6B` (from `EMBEDDING_MODEL_NAME` env var)
-- Device: CUDA (GPU)
+- Model: `Qwen/Qwen3-Embedding-0.6B` (from `MODEL_NAME` env var)
+- Device: Configurable via `EMBEDDER_DEVICE` (default `cuda`, set to `cpu` in gpu.yml)
 - Batch size: 64
 - Normalize: True
 - Max texts per request: 256
-- Output dimension: 1024
+- Output dimension: Dynamically reported by model (1024 for Qwen3-Embedding-0.6B)
 
 ### Redis Database Allocation
 
@@ -2065,18 +2225,21 @@ command: >
 | db0 | Celery message broker |
 | db1 | Celery result backend (expires in 3600s) |
 | db2 | URL dedup SETs (key: `ttwatch:dedup:urls:{user_id}`) |
-| db3 | Cache (search status, rate limits), pub/sub (alerts, search completed) |
+| db3 | Cache (search status, rate limits), pub/sub (alerts, search completed, search progress) |
 
 ### Redis Key Patterns
 
 | Pattern | Database | Purpose |
 |---------|----------|---------|
 | `ttwatch:dedup:urls:{user_id}` | db2 | SET of ingested URLs per user |
-| `ttwatch:search_status:{topic_id}` | db3 | JSON search status (TTL 300-600s) |
+| `ttwatch:search_status:{topic_id}` | db3 | JSON search status (TTL 3600s) |
 | `ttwatch:search_lock:{topic_id}` | db3 | Search cooldown lock (TTL 300s) |
+| `ttwatch:search_progress:{topic_id}:*` | db3 | Search progress counters (queries_total, queries_completed, ingested, tasks_completed, started_at) (TTL 7200s) |
+| `ttwatch:processing:{topic_id}:*` | db3 | Processing phase counters (expected, phase, embedded, summarized, sentiment, relevance, entities, cluster_dispatched) (TTL 7200s) |
 | `ttwatch:rate:{user_id}:{endpoint}` | db3 | Rate limit counter (TTL 60s) |
 | `ttwatch:alerts:triggered` | db3 | Pub/sub channel for price alerts |
 | `ttwatch:search:completed` | db3 | Pub/sub channel for search completions |
+| `ttwatch:search:progress` | db3 | Pub/sub channel for search progress updates |
 
 ---
 
@@ -2118,10 +2281,18 @@ command: >
 - Admin version status endpoint
 - Full dark-theme frontend with D3 visualizations
 - 4 deployment modes with Docker Compose overlays
+- Dual-model LLM routing (primary Qwen3-32B-AWQ + fast Qwen3-8B-AWQ)
+- Per-user LLM task routing configuration (10 categories)
+- Models dashboard page with health monitoring and routing controls
+- Search progress tracking with multi-phase status (generating_queries -> searching -> processing -> completed)
+- Search cancellation
+- Pipeline stall detection and auto-recovery
+- Skipped article tracking to prevent pipeline stalls from dedup-heavy batches
+- Comprehensive system diagnostic script (ttwatch-diagnose.sh)
 
 ### Not Yet Implemented / Placeholder
 
-- **MCP Server**: `services/mcp/__init__.py` exists but is empty. No MCP functionality is implemented.
+- **MCP Server**: `services/api/app/mcp/__init__.py` exists but is empty. No MCP functionality is implemented.
 - **RSS Feed Sources**: The `sources` table and CRUD exist, but no RSS feed polling task is implemented. Sources are managed but not consumed.
 - **Saved Query Execution**: Saved queries can be created and listed, but no task executes them on schedule.
 - **Entity Cluster Map Population**: `entity_cluster_map` table exists and is preserved during reclustering, but no task populates it after initial cluster creation.
@@ -2138,9 +2309,9 @@ command: >
 TTwatch/
   .env                          # Environment variables (secrets, service versions)
   .env.example                  # Template with placeholder values
-  Makefile                      # 22 deployment and management targets
+  Makefile                      # Deployment and management targets
   docker-compose.yml            # Base: 10 services (no GPU)
-  docker-compose.gpu.yml        # GPU overlay: adds vllm + embedder
+  docker-compose.gpu.yml        # GPU overlay: adds vllm + vllm-fast + embedder
   docker-compose.dev.yml        # Dev overlay: hot-reload, volume mounts
   docker-compose.cloud.yml      # Cloud overlay: cloud LLM settings
   docker-compose.lan.yml        # LAN overlay: remote services
@@ -2156,7 +2327,7 @@ services/api/
   requirements.txt              # FastAPI, SQLAlchemy[asyncio], asyncpg, pyjwt, argon2-cffi, etc.
   app/
     __init__.py
-    main.py                     # FastAPI app, WebSocket, ConnectionManager, lifespan
+    main.py                     # FastAPI app, WebSocket, ConnectionManager, lifespan, pub/sub listeners
     config.py                   # Pydantic Settings (all env vars)
     deps.py                     # DB engine, Redis, auth deps, rate limiting
     celery_client.py            # Celery app instance for task dispatch
@@ -2169,9 +2340,10 @@ services/api/
       user.py                   # User, ApiKey, RefreshToken
       intelligence.py           # Topic, Source, Cluster, Article, Entity, etc.
       investment.py             # TickerReference, MarketDataCache, PriceAlert, etc.
+      llm_config.py             # LlmTaskConfig (per-user model routing)
     routers/
-      health.py                 # /health, /health/extended
-      topics.py                 # CRUD + search trigger + search status + clusters
+      health.py                 # /health, /health/services
+      topics.py                 # CRUD + search trigger + cancel + status + processing + clusters
       clusters.py               # Get cluster + list articles
       articles.py               # List (filtered) + get + entities
       search.py                 # Semantic search via Qdrant
@@ -2184,13 +2356,14 @@ services/api/
       market_data.py            # Symbol data + price history
       users.py                  # Profile + API key management
       admin.py                  # Version status + check trigger
+      models.py                 # Model status + task routing config
     schemas/
       topics.py                 # TopicCreate, TopicUpdate, TopicResponse, ClusterResponse
       articles.py               # ArticleResponse, ArticleDetail
       entities.py               # EntityResponse, EntityGraphResponse
-      investment.py             # WatchlistCreate, PriceAlertCreate, etc.
+      investment.py             # WatchlistCreate, PriceAlertCreate, MarketDataResponse, etc.
       queries.py                # SavedQueryCreate, SavedQueryResponse
-      sentiment.py              # SentimentOverview, SentimentHistoryPoint
+      sentiment.py              # SentimentPointResponse
       sources.py                # SourceCreate, SourceResponse
     services/
       llm.py                    # Abstract LLMProvider interface
@@ -2199,11 +2372,13 @@ services/api/
       llm_cloud.py              # CloudLLMProvider (OpenAI/Anthropic/OpenRouter)
       llm_utils.py              # JSON parsing from LLM output
       embedder.py               # LocalEmbeddingProvider + CloudEmbeddingProvider
-      init_services.py          # Qdrant collection + MinIO bucket init
-      http_utils.py             # Shared HTTP client utilities
+      init_services.py          # Qdrant collection + MinIO bucket init (with dimension validation)
+      http_utils.py             # Shared HTTP retry configuration
       version_checker.py        # Upstream version checking (GitHub, DockerHub, HuggingFace)
     middleware/
       rate_limit.py             # Lua-based Redis rate limiter
+    mcp/
+      __init__.py               # Empty placeholder
 ```
 
 ### Worker Service
@@ -2217,22 +2392,23 @@ services/worker/
     celeryconfig.py             # Celery config: routing, beat schedule, task discovery
     db.py                       # Sync SQLAlchemy engine, psycogreen patching, db_session()
     rls.py                      # with_rls_context decorator (bound + unbound task support)
-    llm_sync.py                 # SyncLLMClient, SyncEmbeddingClient (httpx sync, tenacity retry)
+    llm_sync.py                 # SyncLLMClient + SyncEmbeddingClient (httpx sync, tenacity retry)
+    llm_router.py               # Per-user LLM task routing (primary/fast/auto)
     tasks/
       briefing.py               # generate_briefing: hierarchical summarization
       cluster.py                # recluster_topic: UMAP + HDBSCAN
       correlation_signals.py    # detect_correlation_signals: sentiment vs. price
       coverage_gaps.py          # detect_coverage_gaps: LLM gap analysis
-      embed.py                  # embed_article: vectorize + Qdrant + semantic dedup
+      embed.py                  # embed_article: vectorize + Qdrant + semantic dedup + auto-cluster trigger
       entities.py               # extract_entities: LLM NER + entity-article mapping
-      ingest.py                 # ingest_article: fetch + extract + 3-layer dedup + fan-out
+      ingest.py                 # ingest_article: fetch + extract + 3-layer dedup + fan-out + skip tracking
       investment_analysis.py    # generate_investment_analyses: per-asset LLM analysis
       maintenance.py            # cleanup tasks + fetch_market_data
-      periodic.py               # schedule_* dispatch tasks (9 tasks)
+      periodic.py               # schedule_* dispatch tasks (9 dispatch tasks + refresh_market_data)
       price_alerts.py           # check_price_alerts: threshold evaluation + pub/sub
       relevance.py              # score_relevance: LLM relevance scoring
       resolve_ticker.py         # resolve_entity_ticker: reference + LLM resolution
-      search.py                 # run_topic_search: SearXNG queries + dispatch ingestion
+      search.py                 # run_topic_search: SearXNG queries + dispatch + detect_stalled_pipelines
       search_plan.py            # generate_search_queries: LLM query decomposition
       sentiment.py              # classify_sentiment: LLM sentiment score
       sentiment_agg.py          # compute_sentiment_history: daily aggregation
@@ -2246,7 +2422,7 @@ services/worker/
 
 ```
 services/embedder/
-  Dockerfile                    # Python 3.11-slim, CUDA support, sentence-transformers
+  Dockerfile                    # Python 3.11-slim, sentence-transformers, torch
   requirements.txt              # fastapi, uvicorn, sentence-transformers, torch
   server.py                     # FastAPI: /embed (POST), /health (GET)
 ```
@@ -2256,7 +2432,7 @@ services/embedder/
 ```
 services/frontend/
   Dockerfile                    # Node 20-alpine, npm install, next build, next start
-  package.json                  # next 14.2.29, react 18, zustand, axios, d3, recharts
+  package.json                  # next ^14.2.0, react 18.3.0, zustand, axios, d3, recharts
   tailwind.config.ts            # Dark theme configuration
   tsconfig.json
   src/                          # (see Section 11 for full file tree)
@@ -2266,7 +2442,6 @@ services/frontend/
 
 ```
 config/
-  alembic.ini                   # Alembic configuration
   searxng/
     settings.yml                # SearXNG engine configuration
 ```
@@ -2277,12 +2452,13 @@ config/
 migrations/
   env.py                        # Alembic environment (imports all models)
   versions/
-    001_auth_tables.py          # users, api_keys, refresh_tokens
-    002_intelligence_tables.py  # topics, sources, clusters, articles, entities, etc.
-    003_investment_tables.py    # ticker_reference, market_data, watchlist, alerts, etc.
-    004_enable_rls.py           # RLS policies on 15 tables
-    005_app_grants.py           # ttwatch_app role grants
-    006_worker_grants.py        # ttwatch_worker role grants
+    001_create_users_and_auth.py    # users, api_keys, refresh_tokens
+    002_create_intelligence_tables.py  # topics, sources, clusters, articles, entities, etc.
+    003_create_investment_tables.py  # ticker_reference, market_data, watchlist, alerts, etc.
+    004_add_rls_policies.py         # RLS policies on 15 tables
+    005_grants_app_role.py          # ttwatch_app role grants
+    006_grants_worker_role.py       # ttwatch_worker role grants
+    007_create_llm_task_config.py   # llm_task_config table with RLS
 ```
 
 ### Scripts
@@ -2298,6 +2474,7 @@ scripts/
   update.sh                     # Application update
   benchmark-gpu.py              # vLLM benchmark
   cleanup_bad_data.py           # Data cleanup (CoT artifacts, bad summaries)
+  ttwatch-diagnose.sh           # Comprehensive system diagnostic
 ```
 
 ### Tests
@@ -2305,11 +2482,11 @@ scripts/
 ```
 tests/
   conftest.py                   # SQLite test DB, mocked services (LLM, embedder, Qdrant, MinIO, Redis, Celery)
-  test_auth.py                  # Auth flow tests
-  test_topics.py                # Topic CRUD tests
-  test_search.py                # Search tests
+  test_auth.py                  # Auth flow tests (register, login, refresh, logout, protected endpoints)
+  test_topics.py                # Topic CRUD tests (create, read, update, delete, limits, isolation)
+  test_search.py                # Semantic search tests (auth, results, scoring, filtering)
   test_ingestion.py             # Ingestion pipeline tests
-  test_investment.py            # Investment module tests
+  test_investment.py            # Investment module tests (watchlist, alerts, analyses, signals)
 ```
 
 ---
@@ -2320,7 +2497,7 @@ tests/
 
 - Docker and Docker Compose v2
 - NVIDIA GPU with CUDA drivers (for GPU modes)
-- 24+ GB VRAM recommended for QwQ-32B-AWQ
+- 24+ GB VRAM recommended for dual-model GPU mode (Qwen3-32B-AWQ + Qwen3-8B-AWQ)
 - Node.js 20+ (for frontend development outside Docker)
 
 ### First-Time Setup
@@ -2331,7 +2508,8 @@ git clone <repo-url> && cd TTwatch
 
 # 2. Copy and configure environment
 cp .env.example .env
-# Edit .env: set POSTGRES_PASSWORD, JWT_SECRET, MINIO_SECRET_KEY
+# Edit .env: set POSTGRES_PASSWORD, APP_DB_PASSWORD, WORKER_DB_PASSWORD,
+#            JWT_SECRET, MINIO_ROOT_PASSWORD
 
 # 3. Download models (GPU mode only)
 make download-models  # or: bash scripts/download-models.sh
@@ -2393,6 +2571,11 @@ make restore          # Restore from backup file
 make logs             # All services
 make logs-api         # API only
 make logs-worker      # Worker only
+```
+
+**System diagnostics**:
+```bash
+bash scripts/ttwatch-diagnose.sh  # Full system diagnostic
 ```
 
 ### Adding a New API Router
@@ -2465,6 +2648,7 @@ make migrate-new  # Enter migration message
 4. If user-scoped, add RLS policy in a new migration:
 ```sql
 ALTER TABLE my_table ENABLE ROW LEVEL SECURITY;
+ALTER TABLE my_table FORCE ROW LEVEL SECURITY;
 CREATE POLICY user_isolation ON my_table FOR ALL TO ttwatch_app
     USING (user_id = current_setting('ttwatch.current_user_id')::uuid)
     WITH CHECK (user_id = current_setting('ttwatch.current_user_id')::uuid);
@@ -2478,11 +2662,12 @@ CREATE POLICY worker_bypass ON my_table FOR ALL TO ttwatch_worker
 
 Tests use an in-memory SQLite database with mocked external services:
 - **LLM**: Returns canned JSON responses
-- **Embedder**: Returns zero vectors of correct dimension
+- **Embedder**: Returns vectors of correct dimension (`[0.1] * 1024`)
 - **Qdrant**: No-op operations
 - **MinIO**: In-memory dict storage
-- **Redis**: fakeredis or no-op
-- **Celery**: Tasks run synchronously via `CELERY_ALWAYS_EAGER=True`
+- **Redis**: No-op
+- **Celery**: Tasks mocked (not executed)
+- **Password hasher**: Argon2 with reduced parameters for speed
 
 ---
 
@@ -2565,7 +2750,7 @@ Tests use an in-memory SQLite database with mocked external services:
 
 **Decision**: Workers publish to Redis pub/sub channels; API background coroutines subscribe and bridge to the WebSocket ConnectionManager.
 
-**Rationale**: Workers and the API are separate processes (often separate containers). Redis pub/sub provides a decoupled, reliable channel between them. The API coroutines (`ws_alert_listener`, `ws_search_listener`) run as background tasks in the FastAPI lifespan, consuming minimal resources.
+**Rationale**: Workers and the API are separate processes (often separate containers). Redis pub/sub provides a decoupled, reliable channel between them. The API coroutines (`ws_alert_listener`, `ws_search_listener`, `ws_search_progress_listener`) run as background tasks in the FastAPI lifespan, consuming minimal resources.
 
 **Trade-off**: If the API process restarts, in-flight pub/sub messages are lost. This is acceptable because price alerts are persisted in the database and will be visible on next page load.
 
@@ -2584,3 +2769,116 @@ Tests use an in-memory SQLite database with mocked external services:
 **Rationale**: In LAN-distributed mode, the GPU node may start after the main node. Without retries, workers would fail permanently on first task execution. The retry pattern (implemented via `tenacity` in `services/worker/worker/llm_sync.py`) allows workers to self-heal once the GPU node becomes available.
 
 **Trade-off**: First tasks may be delayed by up to ~15 minutes in worst case (sum of backoff delays). This is acceptable for LAN deployments where startup order is not guaranteed.
+
+### 13. Dual-Model LLM Architecture
+
+**Decision**: Run two vLLM instances -- a primary 32B reasoning model and a fast 8B classification model -- with per-user task routing.
+
+**Rationale**: Most pipeline tasks (summarization, sentiment, relevance, entity extraction) are simple classification/extraction that don't benefit from a large reasoning model. Using the smaller 8B model for these tasks provides 2-4x throughput improvement with negligible quality loss. Complex tasks (briefings, investment analyses, coverage gaps) can optionally use the full 32B model for higher quality output.
+
+**Trade-off**: Double GPU memory footprint (primary at 65% + fast at 85% utilization with sequential startup). Requires sufficient VRAM (24+ GB recommended). The fast model disables thinking (`enable_thinking=False`) to avoid unnecessary chain-of-thought overhead.
+
+### 14. Pipeline Stall Detection
+
+**Decision**: Run a `detect_stalled_pipelines` task every 2 minutes to force-complete stuck pipelines.
+
+**Rationale**: In a distributed pipeline with many async fan-out tasks, race conditions can cause the completion check to never fire (e.g., all tasks complete before the expected count is fully set, or skipped articles aren't tracked). The stall detector provides a safety net that ensures the frontend always sees pipeline completion within 5 minutes of the actual completion.
+
+**Trade-off**: Pipelines may show as "completed" slightly before all sub-tasks truly finish. This is acceptable because the 80% threshold for auto-clustering means most work is already done when the stall is detected.
+
+---
+
+## 19. Changelog (v1.0 -> v1.1)
+
+### New Features
+
+1. **Dual-Model LLM System**: Added `vllm-fast` service running Qwen3-8B-AWQ alongside the primary Qwen3-32B-AWQ model. All 10 task categories default to the fast model for improved throughput.
+
+2. **Per-User LLM Task Routing**: New `llm_task_config` table (migration 007) and `llm_router.py` module allow users to configure which model (primary/fast/auto) handles each task category via the API.
+
+3. **Models Dashboard Page**: New `/dashboard/models` frontend page showing model health status and task routing configuration with live controls.
+
+4. **Models API Router**: New endpoints `GET /api/models/status`, `GET /api/models/task-routing`, `PUT /api/models/task-routing` for model management.
+
+5. **Pipeline Stall Detection**: New `detect_stalled_pipelines` task runs every 2 minutes to detect and force-complete processing pipelines stuck for >5 minutes.
+
+6. **Search Progress Tracking**: Multi-phase progress tracking (generating_queries -> searching -> processing -> completed) with Redis counters for queries, ingestion, and processing subtasks.
+
+7. **Search Cancellation**: New `POST /api/topics/{topic_id}/search/cancel` endpoint.
+
+8. **Processing Status Endpoint**: New `GET /api/topics/{topic_id}/processing-status` for detailed per-phase progress.
+
+9. **Skipped Article Tracking**: `_track_skipped_article()` in ingest.py decrements expected counts when articles are deduplicated, preventing pipeline stalls from dedup-heavy batches.
+
+10. **Auto-Cluster Trigger**: Embedding task auto-dispatches `recluster_topic` when 80% of expected articles are embedded, rather than waiting for the periodic 2-hour schedule.
+
+11. **System Diagnostic Script**: New `scripts/ttwatch-diagnose.sh` with 12 diagnostic sections.
+
+12. **Search Progress WebSocket**: New `ttwatch:search:progress` pub/sub channel and `ws_search_progress_listener` for real-time search progress updates.
+
+### Model Changes
+
+- **Primary LLM**: QwQ-32B-AWQ -> Qwen3-32B-AWQ
+- **Fast LLM (new)**: Qwen3-8B-AWQ with thinking disabled
+- **vLLM quantization**: `awq` -> `awq_marlin` (optimized kernel) in GPU-colocated mode
+- **GPU memory split**: Primary model uses 0.65 (was 0.85), fast model uses 0.85
+- **Max model length**: 32768 -> 8192 in GPU-colocated mode (8192 sufficient for all tasks)
+- **Fast model concurrency**: 16 max sequences (vs 8 for primary)
+
+### Infrastructure Changes
+
+- **API port**: Standardized to 8080 (was 8000 in some configs)
+- **SearXNG host port**: 8888:8080 (was 8080:8080)
+- **Database passwords**: Split into `APP_DB_PASSWORD` and `WORKER_DB_PASSWORD` (was single `POSTGRES_PASSWORD`)
+- **Health checks**: Updated intervals (Postgres/Qdrant/Redis 5s, was 10s), new checks for workers (celery inspect) and scheduler (pgrep)
+- **Qdrant health check**: Changed from HTTP GET `/readyz` to TCP check on port 6333
+- **MinIO health check**: Changed from `mc ready local` to `curl /minio/health/live`
+- **Redis**: Added `--maxmemory 512mb --maxmemory-policy volatile-lru` configuration
+- **Embedder device**: Now configurable via `EMBEDDER_DEVICE` env var (default: `cpu` in gpu.yml, `cuda` in gpu-node.yml)
+
+### API Changes
+
+- **Health endpoint**: `/health/extended` renamed to `/health/services`, now also checks vLLM-Fast
+- **Topic articles**: Moved from `GET /api/articles?topic_id=...` to `GET /api/topics/{topic_id}/articles`
+- **Briefings**: Moved from `GET /api/briefings?topic_id=...` to `GET /api/topics/{topic_id}/briefings`
+- **Briefing generation**: Moved from `POST /api/briefings/generate` to `POST /api/topics/{topic_id}/briefings/generate`
+- **Entities**: Moved from `GET /api/entities?topic_id=...` to `GET /api/topics/{topic_id}/entities`
+- **Entity graph**: Moved from `GET /api/entities/graph` to `GET /api/topics/{topic_id}/entity-graph`
+- **Sentiment**: Moved from `GET /api/sentiment/overview` to `GET /api/topics/{topic_id}/sentiment`
+- **Sentiment history**: Moved from `GET /api/sentiment/history` to `GET /api/topics/{topic_id}/sentiment/history`
+- **Sources**: Moved to topic-scoped paths (`/api/topics/{topic_id}/sources`)
+- **Saved queries**: Moved to topic-scoped paths (`/api/topics/{topic_id}/queries`)
+- **Watchlist**: Moved to topic-scoped paths (`/api/topics/{topic_id}/watchlist`)
+- **Analyses**: Moved to `GET /api/topics/{topic_id}/analyses`
+- **Correlation signals**: Moved to `GET /api/topics/{topic_id}/correlation-signals`
+- **Users**: Moved from `/api/users/me` to `/api/me`
+- **New endpoints**: `/api/topics/{topic_id}/search/cancel`, `/api/topics/{topic_id}/processing-status`, `/api/models/*`
+
+### Environment Variable Changes
+
+- **New**: `VLLM_FAST_URL`, `FAST_MODEL_NAME`, `EMBEDDING_MODEL_NAME`, `EMBEDDING_DIMENSION`, `EMBEDDER_DEVICE`, `MINIO_URL`, `APP_DB_PASSWORD`, `WORKER_DB_PASSWORD`, `NEXT_PUBLIC_WS_URL`, `INTERNAL_API_URL`
+- **Changed default**: `LOCAL_MODEL_NAME`: `QwQ-32B-AWQ` -> `Qwen3-32B-AWQ`
+- **Changed default**: `MINIO_ACCESS_KEY`/`MINIO_SECRET_KEY`: Now sourced from `MINIO_ROOT_USER`/`MINIO_ROOT_PASSWORD`
+
+### Database Changes
+
+- **New table**: `llm_task_config` (migration 007) with RLS policies and grants
+- **RLS count**: 15 -> 16 tables (added `llm_task_config`)
+
+### Worker Changes
+
+- **New module**: `llm_router.py` for dual-model task routing
+- **New task**: `detect_stalled_pipelines` (every 2 minutes)
+- **New function**: `create_fast_client()` in `llm_sync.py`
+- **Beat schedule**: 15 -> 16 entries (added `detect-stalled-pipelines`)
+- **Ingest task**: Added `_track_skipped_article()` for pipeline progress tracking
+- **Embed task**: Added auto-cluster dispatch at 80% embedded threshold
+- **Fan-out**: Added staggered countdowns (1s, 1s, 3s, 6s, 10s) to prevent transaction race conditions
+- **Trafilatura config**: Custom config with 10s download timeout, 2 max redirects
+
+### Frontend Changes
+
+- **New page**: `/dashboard/models` for model status and task routing
+- **New types**: `ModelInfo`, `ModelStatusResponse`, `TaskRoutingEntry`, `TaskRoutingResponse`, `TaskRoutingChange`, `ProcessingStatusResponse`, `SearchStatusResponse`
+- **API client**: Added model status and task routing API functions, search cancel, processing status
+- **WebSocket**: Added handling for `search_progress` message type
