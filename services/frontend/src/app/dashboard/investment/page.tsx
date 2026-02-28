@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import {
   TrendingUp,
   BarChart3,
@@ -18,6 +18,12 @@ import {
   removeWatchlistItem,
   getMarketData,
   getInvestmentAnalyses,
+  getInvestmentStatus,
+  triggerInvestmentAnalysis,
+} from "@/lib/api-client";
+import type {
+  InvestmentStatusResponse,
+  InvestmentTriggerResponse,
 } from "@/lib/api-client";
 import type {
   WatchlistItemResponse,
@@ -131,6 +137,9 @@ export default function InvestmentPage() {
         })}
       </div>
 
+      {/* Pipeline control */}
+      <InvestmentPipelineControl topicId={selectedTopicId} />
+
       {/* Tab content */}
       {activeTab === "watchlist" && (
         <WatchlistTab
@@ -166,6 +175,298 @@ export default function InvestmentPage() {
           topicId={selectedTopicId}
           onClose={() => setDetailSymbol(null)}
         />
+      )}
+    </div>
+  );
+}
+
+// ─── Pipeline Control ─────────────────────────────────────────────────────────
+
+const STEP_ICONS: Record<string, string> = {
+  entity_extraction: "🔍",
+  ticker_resolution: "🎯",
+  market_data: "📊",
+  analyses: "📝",
+  correlation_signals: "⚡",
+};
+
+const STEP_LABELS: Record<string, string> = {
+  entity_extraction: "Entities",
+  ticker_resolution: "Tickers",
+  market_data: "Market Data",
+  analyses: "Analyses",
+  correlation_signals: "Signals",
+};
+
+function InvestmentPipelineControl({ topicId }: { topicId: string }) {
+  const [status, setStatus] = useState<InvestmentStatusResponse | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [dispatching, setDispatching] = useState(false);
+  const [cooldown, setCooldown] = useState(false);
+  const [result, setResult] = useState<InvestmentTriggerResponse | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const refreshTimerRef = useRef<ReturnType<typeof setTimeout>>();
+  const pollTimerRef = useRef<ReturnType<typeof setInterval>>();
+
+  const loadStatus = useCallback(async () => {
+    try {
+      const data = await getInvestmentStatus(topicId);
+      setStatus(data);
+    } catch {
+      // silent
+    } finally {
+      setLoading(false);
+    }
+  }, [topicId]);
+
+  useEffect(() => {
+    setLoading(true);
+    setResult(null);
+    setError(null);
+    setCooldown(false);
+    loadStatus();
+    return () => {
+      clearTimeout(refreshTimerRef.current);
+      clearInterval(pollTimerRef.current);
+    };
+  }, [topicId, loadStatus]);
+
+  async function handleTrigger() {
+    setDispatching(true);
+    setError(null);
+    setResult(null);
+    try {
+      const data = await triggerInvestmentAnalysis(topicId);
+      setResult(data);
+      setCooldown(true);
+
+      // Auto-refresh status every 30s
+      pollTimerRef.current = setInterval(() => {
+        loadStatus();
+      }, 30000);
+
+      // One-time refresh at 45s to catch analysis results
+      refreshTimerRef.current = setTimeout(() => {
+        loadStatus();
+        clearInterval(pollTimerRef.current);
+      }, 45000);
+    } catch (err: unknown) {
+      const axiosErr = err as { response?: { status?: number } };
+      if (axiosErr.response?.status === 429) {
+        setCooldown(true);
+        setError("Investment analysis was recently triggered. Please wait 5 minutes.");
+      } else {
+        setError("Failed to trigger investment analysis.");
+      }
+    } finally {
+      setDispatching(false);
+    }
+  }
+
+  if (loading) {
+    return (
+      <div
+        style={{
+          background: "#161923",
+          border: "1px solid #2a2d3e",
+          borderRadius: 8,
+          padding: 16,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          height: 80,
+        }}
+      >
+        <div
+          style={{
+            width: 20,
+            height: 20,
+            border: "2px solid #3B82F6",
+            borderTopColor: "transparent",
+            borderRadius: "50%",
+            animation: "spin 1s linear infinite",
+          }}
+        />
+      </div>
+    );
+  }
+
+  return (
+    <div
+      style={{
+        background: "#161923",
+        border: "1px solid #2a2d3e",
+        borderRadius: 8,
+        padding: 20,
+      }}
+    >
+      {/* Pipeline steps row */}
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(5, 1fr)",
+          gap: 12,
+          marginBottom: 16,
+        }}
+      >
+        {(status?.pipeline_steps ?? []).map((step) => (
+          <div
+            key={step.step}
+            style={{
+              background: "#1e2130",
+              border: "1px solid #2a2d3e",
+              borderRadius: 6,
+              padding: 12,
+              textAlign: "center",
+            }}
+          >
+            <div style={{ fontSize: 20, marginBottom: 4 }}>
+              {STEP_ICONS[step.step] ?? "📋"}
+            </div>
+            <div
+              style={{
+                fontSize: 11,
+                fontWeight: 600,
+                color: "#94A3B8",
+                textTransform: "uppercase",
+                letterSpacing: "0.05em",
+                marginBottom: 4,
+              }}
+            >
+              {STEP_LABELS[step.step] ?? step.step}
+            </div>
+            <div
+              style={{
+                fontSize: 12,
+                fontWeight: 600,
+                color: step.status === "ok" ? "#10B981" : "#EF4444",
+              }}
+            >
+              {step.status === "ok" ? "✓ Ready" : "✗ Missing"}
+            </div>
+            <div style={{ fontSize: 11, color: "#64748B", marginTop: 2 }}>
+              {step.detail}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Resolved symbols */}
+      {(status?.resolved_symbols ?? []).length > 0 && (
+        <div style={{ marginBottom: 16 }}>
+          <span style={{ fontSize: 11, color: "#94A3B8", marginRight: 8 }}>
+            Resolved symbols:
+          </span>
+          {status!.resolved_symbols.map((sym) => (
+            <span
+              key={sym}
+              style={{
+                display: "inline-block",
+                fontSize: 11,
+                fontFamily: "monospace",
+                fontWeight: 600,
+                color: "#3B82F6",
+                background: "rgba(59,130,246,0.1)",
+                border: "1px solid rgba(59,130,246,0.2)",
+                borderRadius: 4,
+                padding: "2px 6px",
+                marginRight: 4,
+                marginBottom: 4,
+              }}
+            >
+              {sym}
+            </span>
+          ))}
+        </div>
+      )}
+
+      {/* Trigger button */}
+      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+        <button
+          onClick={handleTrigger}
+          disabled={dispatching || cooldown}
+          style={{
+            background: dispatching || cooldown ? "#1e293b" : "#3B82F6",
+            color: dispatching || cooldown ? "#64748B" : "#ffffff",
+            border: "none",
+            borderRadius: 6,
+            padding: "8px 16px",
+            fontSize: 13,
+            fontWeight: 600,
+            cursor: dispatching || cooldown ? "not-allowed" : "pointer",
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            opacity: dispatching || cooldown ? 0.6 : 1,
+          }}
+        >
+          {dispatching ? (
+            <>
+              <span
+                style={{
+                  display: "inline-block",
+                  width: 14,
+                  height: 14,
+                  border: "2px solid currentColor",
+                  borderTopColor: "transparent",
+                  borderRadius: "50%",
+                  animation: "spin 1s linear infinite",
+                }}
+              />
+              Dispatching...
+            </>
+          ) : cooldown ? (
+            "Cooldown (5 min)"
+          ) : (
+            "▶ Run Investment Analysis"
+          )}
+        </button>
+      </div>
+
+      {/* Result info box */}
+      {result && (
+        <div
+          style={{
+            marginTop: 12,
+            padding: 12,
+            background: "rgba(59,130,246,0.08)",
+            border: "1px solid rgba(59,130,246,0.2)",
+            borderRadius: 6,
+            fontSize: 12,
+            color: "#93C5FD",
+            lineHeight: 1.6,
+          }}
+        >
+          <div style={{ fontWeight: 600, marginBottom: 4 }}>
+            Pipeline dispatched
+          </div>
+          <div>
+            {result.unresolved_entities > 0 &&
+              `Resolving ${result.unresolved_entities} entities to tickers. `}
+            {result.market_data_tasks > 0 &&
+              `Fetching market data for ${result.symbols.join(", ")}. `}
+            {result.unresolved_entities === 0 && result.market_data_tasks === 0 &&
+              "No new entities or symbols to process. "}
+            Analyses will generate in ~30s.
+          </div>
+        </div>
+      )}
+
+      {/* Error message */}
+      {error && (
+        <div
+          style={{
+            marginTop: 12,
+            padding: 12,
+            background: "rgba(239,68,68,0.08)",
+            border: "1px solid rgba(239,68,68,0.2)",
+            borderRadius: 6,
+            fontSize: 12,
+            color: "#FCA5A5",
+          }}
+        >
+          {error}
+        </div>
       )}
     </div>
   );

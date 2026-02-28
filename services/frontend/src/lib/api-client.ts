@@ -501,4 +501,50 @@ export async function triggerVersionCheck(): Promise<VersionCheckResponse> {
   return data;
 }
 
+// ── Investment Pipeline ──
+
+export interface InvestmentPipelineStep {
+  step: string;
+  status: "ok" | "missing";
+  detail: string;
+}
+
+export interface InvestmentStatusResponse {
+  topic_id: string;
+  entities_by_type: Record<string, number>;
+  resolved_symbols: string[];
+  pipeline_steps: InvestmentPipelineStep[];
+  ready: boolean;
+}
+
+export interface InvestmentTriggerResponse {
+  status: string;
+  topic_id: string;
+  ticker_resolution_tasks: number;
+  market_data_tasks: number;
+  symbols: string[];
+  unresolved_entities: number;
+  analysis_task_id: string;
+  correlation_task_id: string;
+  note: string;
+}
+
+export async function getInvestmentStatus(
+  topicId: string
+): Promise<InvestmentStatusResponse> {
+  const { data } = await api.get<InvestmentStatusResponse>(
+    `/api/topics/${topicId}/investment/status`
+  );
+  return data;
+}
+
+export async function triggerInvestmentAnalysis(
+  topicId: string
+): Promise<InvestmentTriggerResponse> {
+  const { data } = await api.post<InvestmentTriggerResponse>(
+    `/api/topics/${topicId}/investment/analyze`
+  );
+  return data;
+}
+
 export default api;
