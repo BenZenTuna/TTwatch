@@ -157,8 +157,14 @@ def run_topic_search(user_id: str, topic_id: str, session=None):
             except Exception as e:
                 logger.warning(f"Failed to set processing counters: {e}")
 
-        # Dispatch ingestion for each unique result (AFTER counters are set)
-        for r in results:
+        # Dispatch ingestion in staggered waves to prevent queue starvation.
+        # Without this, all ingest tasks queue ahead of fan-out tasks (embed,
+        # summarize, etc.), starving the GPU until all HTTP fetches complete.
+        _INGEST_BATCH = 32   # matches worker-io gevent concurrency
+        _INGEST_DELAY = 5    # seconds between waves
+
+        for i, r in enumerate(results):
+            countdown = (i // _INGEST_BATCH) * _INGEST_DELAY
             app.send_task("ingest_article", args=[
                 user_id,
                 topic_id,
@@ -167,7 +173,7 @@ def run_topic_search(user_id: str, topic_id: str, session=None):
                 "title": r["title"],
                 "source_name": r["source_name"],
                 "source_url": r["source_url"],
-            })
+            }, countdown=countdown)
 
         logger.info(
             f"run_topic_search: dispatched {len(results)} articles "
