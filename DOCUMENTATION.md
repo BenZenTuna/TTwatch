@@ -1,7 +1,7 @@
 # TTwatch Platform Documentation
 
-**Version**: 1.1
-**Last Updated**: 2026-02-27
+**Version**: 1.2
+**Last Updated**: 2026-03-01
 **Scope**: Complete platform reference covering architecture, deployment, APIs, data flows, and implementation details.
 
 ---
@@ -26,7 +26,7 @@
 16. [File and Directory Reference](#16-file-and-directory-reference)
 17. [Development Guide](#17-development-guide)
 18. [Appendix: Key Design Decisions](#18-appendix-key-design-decisions)
-19. [Changelog](#19-changelog-v10--v11)
+19. [Changelog](#19-changelog)
 
 ---
 
@@ -37,7 +37,7 @@ TTwatch is a self-hosted, multi-tenant intelligence monitoring platform that con
 ### Core Capabilities
 
 - **Automated News Ingestion**: SearXNG meta-search with LLM-generated query decomposition, trafilatura content extraction, and 3-layer deduplication (URL, content hash, semantic).
-- **Intelligent Clustering**: HDBSCAN clustering on UMAP-reduced embeddings groups related articles into thematic clusters with LLM-generated labels.
+- **Intelligent Clustering**: HDBSCAN clustering on UMAP-reduced embeddings groups related articles into thematic clusters with deterministic frequency-based labels.
 - **Entity Extraction and Resolution**: LLM-based named entity recognition (NER) with automatic resolution of organizations, products, and technologies to ticker symbols.
 - **Sentiment Analysis**: Per-article sentiment classification on a -1.0 to 1.0 scale with daily historical aggregation per cluster.
 - **Briefing Generation**: Hierarchical summarization pipeline (articles to cluster summaries to topic briefings) producing executive-style intelligence reports.
@@ -135,7 +135,7 @@ TTwatch follows a service-oriented architecture with 12 Docker containers commun
 |-----------|-----------|-----------------|
 | API Framework | FastAPI | Async with Uvicorn ASGI server on port 8080 |
 | ORM (API) | SQLAlchemy | Async engine via asyncpg, pool_size=20, max_overflow=10 |
-| ORM (Worker) | SQLAlchemy | Sync engine via psycopg2 + psycogreen gevent patching, pool_size=5 |
+| ORM (Worker) | SQLAlchemy | Sync engine via psycopg2 + psycogreen gevent patching, pool_size=20, max_overflow=15, pool_timeout=60 |
 | Migrations | Alembic | 7 migration versions (001-007) |
 | Task Queue | Celery | JSON serialization, dual worker pools |
 | Password Hashing | Argon2id | time_cost=3, memory_cost=65536 (64 MB), parallelism=4 |
@@ -149,8 +149,8 @@ TTwatch follows a service-oriented architecture with 12 Docker containers commun
 
 | Component | Technology | Details |
 |-----------|-----------|---------|
-| LLM Inference (Primary) | vLLM v0.16.0 | `--quantization awq_marlin --gpu-memory-utilization 0.65 --max-model-len 8192 --max-num-seqs 8 --enable-prefix-caching --reasoning-parser deepseek_r1` |
-| LLM Inference (Fast) | vLLM v0.16.0 | `--quantization awq_marlin --gpu-memory-utilization 0.85 --max-model-len 8192 --max-num-seqs 16 --enable-prefix-caching --disable-log-requests` |
+| LLM Inference (Primary) | vLLM v0.16.0 | `--quantization awq_marlin --gpu-memory-utilization 0.55 --max-model-len 8192 --max-num-seqs 4 --enable-prefix-caching --reasoning-parser deepseek_r1` |
+| LLM Inference (Fast) | vLLM v0.16.0 | `--quantization awq_marlin --gpu-memory-utilization 0.75 --max-model-len 8192 --max-num-seqs 8 --enable-prefix-caching --disable-log-requests` |
 | Primary LLM Model | Qwen3-32B-AWQ | Qwen3 reasoning model, AWQ 4-bit quantization |
 | Fast LLM Model | Qwen3-8B-AWQ | Qwen3 classification model, AWQ 4-bit, thinking disabled via `chat_template_kwargs.enable_thinking=False` |
 | Embedding Model | Qwen3-Embedding-0.6B | 1024-dimensional embeddings, COSINE distance |
@@ -329,9 +329,9 @@ Every infrastructure service has a Docker health check:
 |--------|----------|---------|
 | `init-db.sh` | `scripts/init-db.sh` | Creates `pg_trgm` extension, `ttwatch_app` and `ttwatch_worker` roles, grants CONNECT/USAGE/ALTER DEFAULT PRIVILEGES |
 | `create-admin-user.py` | `scripts/create-admin-user.py` | Interactive admin user creation with Argon2id hashing |
-| `seed-topics.py` | `scripts/seed-topics.py` | Seeds sample topics (AI and Semiconductors, Geopolitical Risk, Cryptocurrency Markets) |
-| `backup.sh` | `scripts/backup.sh` | `pg_dump` to timestamped SQL file in `backups/` |
-| `restore.sh` | `scripts/restore.sh` | Restore from backup file |
+| `seed-topics.py` | `scripts/seed-topics.py` | Seeds 5 sample topics (AI Safety, Biotechnology, Semiconductor Industry, Renewable Energy, Cybersecurity Threats) |
+| `backup.sh` | `scripts/backup.sh` | `pg_dump` (custom format, compressed) + Qdrant collection snapshots to timestamped files in `backups/` |
+| `restore.sh` | `scripts/restore.sh` | Restore from `.dump` (PostgreSQL) or `.snapshot` (Qdrant) backup files |
 | `download-models.sh` | `scripts/download-models.sh` | Downloads LLM and embedding models from HuggingFace |
 | `update.sh` | `scripts/update.sh` | `git pull`, rebuild, migrate, restart |
 | `benchmark-gpu.py` | `scripts/benchmark-gpu.py` | Benchmarks vLLM inference throughput |
@@ -525,7 +525,7 @@ users (1) ----< topics (1) ----< articles >---- clusters
 | `id` | UUID | PK | |
 | `user_id` | UUID | FK `users.id` ON DELETE CASCADE | |
 | `topic_id` | UUID | FK `topics.id` ON DELETE CASCADE | |
-| `keyword` | TEXT | NOT NULL | LLM-generated 2-4 word label |
+| `keyword` | TEXT | NOT NULL | Deterministic frequency-based 2-3 word label |
 | `color` | TEXT | | Hex color from 15-color palette |
 | `article_count` | INTEGER | default `0` | |
 | `trend_score` | FLOAT | default `0` | Weighted recent activity |
@@ -698,7 +698,7 @@ users (1) ----< topics (1) ----< articles >---- clusters
 | `ticker_ref_id` | UUID | FK `ticker_reference.id` | |
 | `entity_name` | TEXT | NOT NULL | |
 | `resolved_symbol` | TEXT | | e.g., `TSLA` |
-| `resolution_method` | TEXT | | `reference_lookup` or `llm_inference` |
+| `resolution_method` | TEXT | | `hardcoded_lookup`, `fuzzy_lookup`, or `llm_inference` |
 | `confidence` | FLOAT | default `0` | 0.0-1.0 |
 | `is_verified` | BOOLEAN | default `false` | |
 | `created_at` | TIMESTAMPTZ | | |
@@ -1103,6 +1103,21 @@ List user's price alerts.
 #### `DELETE /api/price-alerts/{alert_id}`
 Delete a price alert.
 
+#### `GET /api/topics/{topic_id}/investment/status`
+Investment pipeline diagnostic view for a topic. Returns entity counts by type, resolved symbols, 5-step pipeline status (entity_extraction, ticker_resolution, market_data, analyses, correlation_signals), and overall readiness.
+**Response**: `{"topic_id": "...", "entities_by_type": {...}, "resolved_symbols": [...], "pipeline_steps": [...], "ready": true|false}`
+
+#### `POST /api/topics/{topic_id}/investment/analyze`
+Manually trigger the full investment analysis pipeline for a topic. Rate-limited to once per 5 minutes (Redis lock key `ttwatch:investment_lock:{topic_id}`, TTL 300s). Dispatches ticker resolution for unresolved entities, market data fetches for all symbols, and investment analyses + correlation signal detection with 30s countdown.
+**Response**: 202 `{"status": "dispatched", "topic_id": "...", "ticker_resolution_tasks": N, "market_data_tasks": N, "symbols": [...], "unresolved_entities": N, "analysis_task_id": "...", "correlation_task_id": "...", "note": "..."}`
+**Errors**: 404, 429 (cooldown)
+
+#### `POST /api/asset-mappings/{mapping_id}/verify`
+Verify an asset mapping (mark as user-confirmed). Frontend stub exists but backend endpoint is not yet implemented.
+
+#### `POST /api/asset-mappings/{mapping_id}/reject`
+Reject an asset mapping. Frontend stub exists but backend endpoint is not yet implemented.
+
 ### Market Data
 
 #### `GET /api/market-data/{symbol}`
@@ -1235,7 +1250,7 @@ def get_llm_for_task(session, user_id: str, task_category: str) -> SyncLLMClient
 
 ### Task Registry
 
-20 task modules, 24+ named tasks:
+20 task modules, 25+ named tasks:
 
 | Task Name | Module | Queue | Retries | Description |
 |-----------|--------|-------|---------|-------------|
@@ -1248,7 +1263,8 @@ def get_llm_for_task(session, user_id: str, task_category: str) -> SyncLLMClient
 | `extract_entities` | `entities` | default | 3 | LLM NER, create entities + mappings |
 | `classify_sentiment` | `sentiment` | default | 3 | LLM sentiment score (-1.0 to 1.0) |
 | `score_relevance` | `relevance` | default | 3 | LLM relevance score (0.0 to 1.0) |
-| `resolve_entity_ticker` | `resolve_ticker` | default | 2 | Reference lookup + LLM ticker resolution |
+| `resolve_entity_ticker` | `resolve_ticker` | default | 2 | 3-step ticker resolution: hardcoded lookup + pg_trgm fuzzy match + LLM |
+| `reprocess_summaries` | `summarize` | default | 0 | One-time migration: clean CoT leakage from existing article summaries |
 | `recluster_topic` | `cluster` | compute | 0 | UMAP + HDBSCAN clustering |
 | `update_trends` | `trends` | compute | 0 | Trend scores + velocity labels |
 | `generate_briefing` | `briefing` | compute | 2 | Hierarchical briefing generation |
@@ -1294,11 +1310,11 @@ The `schedule_*` tasks in `services/worker/worker/tasks/periodic.py` query all a
 Workers use synchronous SQLAlchemy (`services/worker/worker/db.py`):
 
 ```python
-engine = create_engine(
-    DATABASE_URL.replace("postgresql://", "postgresql+psycopg2://"),
-    pool_size=5,
-    max_overflow=10,
-    pool_pre_ping=True,
+_engine = create_engine(
+    os.environ.get("DATABASE_URL", "postgresql://ttwatch_worker:changeme@postgres:5432/ttwatch"),
+    pool_size=20,
+    max_overflow=15,
+    pool_timeout=60,
 )
 ```
 
@@ -1381,9 +1397,13 @@ When a topic is created, the system uses the LLM to decompose the topic name int
 ```python
 result = _llm.generate_json([
     {"role": "system", "content": (
-        "Given a research topic, generate 3-6 specific search queries "
-        "that would find the most relevant and recent news articles. "
-        "Return JSON: {\"queries\": [\"query1\", \"query2\", ...]}"
+        "You are a search query optimizer. Given a user's natural-language topic description, "
+        "generate 3-6 focused search engine queries.\n\n"
+        "Rules:\n"
+        "- Each query should be 1-6 words, specific...\n"
+        "- Include the current year (2026) in at least one query for freshness.\n"
+        "- Vary the queries to cover different angles...\n"
+        '- Return ONLY valid JSON: {"queries": ["query1", "query2", ...]}'
     )},
     {"role": "user", "content": f"Topic: {topic.name}"},
 ])
@@ -1535,7 +1555,7 @@ LLM scores how relevant an article is to its parent topic on a 0.0-1.0 scale.
 
 **Threshold**: `RELEVANCE_THRESHOLD = 0.3`
 
-Articles below this threshold are excluded from clustering to prevent noise clusters.
+Articles below this threshold are marked as `is_duplicate = True` (reusing the duplicate flag to filter them from display, clustering, and all downstream processing). This prevents noise clusters from off-topic search results.
 
 ### Step 9: Clustering
 
@@ -1562,7 +1582,7 @@ Before deleting old clusters, the task:
 
 **Cluster creation**:
 For each HDBSCAN label (excluding noise label -1):
-1. LLM generates a 2-4 word keyword from the top 10 article titles
+1. Deterministic `_extract_label_from_titles()` generates a 2-3 word keyword from the top 10 article titles using word frequency analysis with proper noun boosting (no LLM call, fast and deterministic)
 2. Creates `Cluster` record with a color from a 15-color palette
 3. Updates articles with `cluster_id`
 4. Corrects `article_count` based on actual DB rows (not Qdrant points, which may include orphans)
@@ -1645,7 +1665,7 @@ services/frontend/
         layout.tsx            # Dashboard layout (AuthGuard, Sidebar, WebSocket)
         page.tsx              # Main dashboard (stats, trending, briefing)
         articles/page.tsx     # Article list with filters
-        investment/page.tsx   # Investment dashboard
+        investment/page.tsx   # Investment dashboard with InvestmentPipelineControl
         search/page.tsx       # Semantic search
         settings/page.tsx     # User settings, API keys
         models/page.tsx       # AI model status and task routing
@@ -1784,20 +1804,30 @@ The investment module bridges intelligence gathering with financial market data,
 
 **File**: `services/worker/worker/tasks/resolve_ticker.py`
 
-Two-step resolution process:
+Three-step resolution process:
 
-**Step 1 -- Reference Lookup** (fast, no LLM):
+**Step 1 -- Hardcoded Common Mappings** (instant, no DB or LLM):
 ```python
-ref = session.execute(
-    select(TickerReference).where(
-        TickerReference.name.ilike(f"%{entity.name}%"),
-        TickerReference.is_active == True,
-    ).limit(1)
-).scalar_one_or_none()
+_COMMON_TICKERS = {
+    "nvidia": "NVDA", "apple": "AAPL", "google": "GOOGL", "microsoft": "MSFT",
+    "tesla": "TSLA", "amazon": "AMZN", "meta": "META", "bitcoin": "BTC-USD",
+    "ethereum": "ETH-USD", "tsmc": "TSM", ...  # 30+ entries
+}
 ```
-Confidence: 0.9, method: `reference_lookup`
+Confidence: 0.95, method: `hardcoded_lookup`
 
-**Step 2 -- LLM Inference** (if no reference match):
+**Step 2 -- pg_trgm Fuzzy Match** (fast DB query, no LLM):
+```python
+fuzzy_result = session.execute(text(
+    "SELECT id, symbol, name, similarity(name, :name) AS sim "
+    "FROM ticker_reference "
+    "WHERE is_active = true AND similarity(name, :name) > 0.3 "
+    "ORDER BY sim DESC LIMIT 1"
+), {"name": entity.name}).first()
+```
+Confidence: capped at 0.95, method: `fuzzy_lookup`
+
+**Step 3 -- LLM Inference** (if no hardcoded or fuzzy match):
 ```python
 result = _llm.generate_json([
     {"role": "system", "content": "Given the entity name, determine if it corresponds to a publicly traded stock, ETF, or cryptocurrency..."},
@@ -1947,7 +1977,7 @@ Frontend WebSocket -> Dashboard notification
         +-- HDBSCAN: cluster assignment
         +-- Preserve sentiment_history + entity_cluster_map
         +-- Delete old clusters
-        +-- LLM: generate 2-4 word keyword per cluster
+        +-- Deterministic: frequency-based 2-3 word keyword per cluster
         +-- PostgreSQL: create new clusters + update article cluster_ids
 
 [Periodic: every 1h]
@@ -1978,10 +2008,13 @@ Frontend WebSocket -> Dashboard notification
         v
 [resolve_entity_ticker]
         |
-        +-- Step 1: ticker_reference ILIKE lookup
-        |       (match: confidence=0.9, method=reference_lookup)
+        +-- Step 1: Hardcoded common mappings (30+ entries)
+        |       (match: confidence=0.95, method=hardcoded_lookup)
         |
-        +-- Step 2: LLM inference
+        +-- Step 2: pg_trgm fuzzy match against ticker_reference
+        |       (match if similarity > 0.3, method=fuzzy_lookup)
+        |
+        +-- Step 3: LLM inference
         |       (match if confidence >= 0.6, method=llm_inference)
         |
         v
@@ -2092,7 +2125,7 @@ All settings are managed via environment variables, loaded by Pydantic Settings 
 | `LLM_PROVIDER` | `local` | `local` or `cloud` |
 | `VLLM_URL` | `http://vllm:8000/v1` | Primary vLLM OpenAI-compatible endpoint |
 | `VLLM_FAST_URL` | `http://vllm-fast:8000/v1` | Fast vLLM endpoint for classification tasks |
-| `LOCAL_MODEL_NAME` | `Qwen3-32B-AWQ` | Primary model name (used in vLLM path) |
+| `LOCAL_MODEL_NAME` | `Qwen3-32B-AWQ` | Primary model name (docker-compose default; Python code default is `Qwen2.5-32B-Instruct-AWQ`, overridden at runtime) |
 | `FAST_MODEL_NAME` | `Qwen3-8B-AWQ` | Fast model name |
 | `CLOUD_LLM_PROVIDER` | `openai` | `openai`, `anthropic`, or `openrouter` |
 | `CLOUD_LLM_API_KEY` | (empty) | API key for cloud provider |
@@ -2144,31 +2177,61 @@ All settings are managed via environment variables, loaded by Pydantic Settings 
 **File**: `config/searxng/settings.yml`
 
 ```yaml
+use_default_settings: true
+
+general:
+  instance_name: "TTwatch Search"
+  enable_metrics: false
+
 search:
+  safe_search: 0
+  autocomplete: ""
+  default_lang: "en"
   formats:
+    - html
     - json
+
+server:
+  secret_key: "change-me-in-production"
+  bind_address: "0.0.0.0"
+  port: 8080
+  limiter: false
+
+ui:
+  static_use_hash: true
+  default_theme: simple
+
+outgoing:
+  request_timeout: 10.0
+  max_request_timeout: 15.0
+  useragent_suffix: "TTwatch"
+  pool_connections: 100
+  pool_maxsize: 20
+
 engines:
   - name: google
     engine: google
     shortcut: g
+    disabled: false
   - name: bing
     engine: bing
     shortcut: b
+    disabled: false
   - name: duckduckgo
     engine: duckduckgo
     shortcut: ddg
-  - name: google_news
+    disabled: false
+  - name: google news
     engine: google_news
     shortcut: gn
-  - name: bing_news
+    disabled: false
+  - name: bing news
     engine: bing_news
     shortcut: bn
-server:
-  limiter: false
-  image_proxy: false
+    disabled: false
 ```
 
-JSON format is enabled (required for programmatic access). Rate limiter is disabled since access is internal only.
+JSON format is enabled (required for programmatic access). Rate limiter is disabled since access is internal only. Outgoing request pool is configured for high concurrency (100 connections, 20 max per host) with a 10-second default timeout.
 
 ### vLLM Configuration (GPU mode)
 
@@ -2178,9 +2241,9 @@ From `docker-compose.gpu.yml`:
 ```
 --model /models/Qwen3-32B-AWQ
 --quantization awq_marlin
---gpu-memory-utilization 0.65
+--gpu-memory-utilization 0.55
 --max-model-len 8192
---max-num-seqs 8
+--max-num-seqs 4
 --enable-prefix-caching
 --reasoning-parser deepseek_r1
 ```
@@ -2189,9 +2252,9 @@ From `docker-compose.gpu.yml`:
 ```
 --model /models/Qwen3-8B-AWQ
 --quantization awq_marlin
---gpu-memory-utilization 0.85
+--gpu-memory-utilization 0.75
 --max-model-len 8192
---max-num-seqs 16
+--max-num-seqs 8
 --enable-prefix-caching
 --disable-log-requests
 ```
@@ -2199,9 +2262,9 @@ From `docker-compose.gpu.yml`:
 | Flag | Primary | Fast | Purpose |
 |------|---------|------|---------|
 | `--quantization` | awq_marlin | awq_marlin | Optimized AWQ quantization kernel |
-| `--gpu-memory-utilization` | 0.65 | 0.85 | GPU memory allocation (shared GPU) |
+| `--gpu-memory-utilization` | 0.55 | 0.75 | GPU memory allocation (shared GPU) |
 | `--max-model-len` | 8192 | 8192 | Maximum context length |
-| `--max-num-seqs` | 8 | 16 | Maximum concurrent sequences |
+| `--max-num-seqs` | 4 | 8 | Maximum concurrent sequences |
 | `--reasoning-parser` | deepseek_r1 | — | Parse reasoning output format |
 | `--disable-log-requests` | — | yes | Reduce logging for high-throughput |
 
@@ -2255,10 +2318,10 @@ From `docker-compose.gpu.yml`:
 - Embedding generation and Qdrant vector storage
 - Semantic dedup (cosine > 0.92)
 - HDBSCAN clustering with UMAP reduction
-- LLM-generated cluster keywords
+- Deterministic cluster keyword generation (frequency-based with proper noun boosting)
 - Trend scoring and velocity labels
 - Entity extraction and entity-article mapping
-- Entity-to-ticker resolution (reference lookup + LLM)
+- Entity-to-ticker resolution (3-step: hardcoded lookup + pg_trgm fuzzy match + LLM)
 - Sentiment classification (-1.0 to 1.0)
 - Relevance scoring with filtering threshold
 - Briefing generation via hierarchical summarization
@@ -2289,6 +2352,10 @@ From `docker-compose.gpu.yml`:
 - Pipeline stall detection and auto-recovery
 - Skipped article tracking to prevent pipeline stalls from dedup-heavy batches
 - Comprehensive system diagnostic script (ttwatch-diagnose.sh)
+- Manual investment analysis pipeline trigger with 5-step status diagnostic
+- Investment pipeline status endpoint (entity_extraction, ticker_resolution, market_data, analyses, correlation_signals)
+- Reprocess summaries migration task (CoT cleanup for existing article summaries)
+- Qdrant snapshot backup/restore alongside PostgreSQL
 
 ### Not Yet Implemented / Placeholder
 
@@ -2298,6 +2365,7 @@ From `docker-compose.gpu.yml`:
 - **Entity Cluster Map Population**: `entity_cluster_map` table exists and is preserved during reclustering, but no task populates it after initial cluster creation.
 - **Article Key Quotes**: The `key_quotes` JSONB column exists on articles, but no task extracts key quotes.
 - **Cloud Embedding Dimension Mismatch Handling**: When switching between local (1024d) and cloud (3072d) embeddings, existing Qdrant collection dimensions may conflict. No automatic migration exists.
+- **Asset Mapping Verify/Reject**: Frontend API client has `verifyAssetMapping()` and `rejectAssetMapping()` stubs calling `/api/asset-mappings/{id}/verify` and `/api/asset-mappings/{id}/reject`, but no corresponding backend endpoints exist.
 
 ---
 
@@ -2412,7 +2480,7 @@ services/worker/
       search_plan.py            # generate_search_queries: LLM query decomposition
       sentiment.py              # classify_sentiment: LLM sentiment score
       sentiment_agg.py          # compute_sentiment_history: daily aggregation
-      summarize.py              # summarize_article: LLM summary + CoT cleanup
+      summarize.py              # summarize_article: LLM summary + CoT cleanup + reprocess_summaries migration task
       trends.py                 # update_trends: trend scores + velocity
       utils.py                  # fetch_article_text: MinIO raw text retrieval
       version_check.py          # check_service_versions: upstream registry check
@@ -2467,9 +2535,9 @@ migrations/
 scripts/
   init-db.sh                    # Database initialization (roles, extensions)
   create-admin-user.py          # Admin user creation
-  seed-topics.py                # Sample topic seeding
-  backup.sh                     # PostgreSQL backup
-  restore.sh                    # PostgreSQL restore
+  seed-topics.py                # Sample topic seeding (5 topics)
+  backup.sh                     # PostgreSQL + Qdrant backup
+  restore.sh                    # PostgreSQL (.dump) or Qdrant (.snapshot) restore
   download-models.sh            # HuggingFace model download
   update.sh                     # Application update
   benchmark-gpu.py              # vLLM benchmark
@@ -2497,7 +2565,7 @@ tests/
 
 - Docker and Docker Compose v2
 - NVIDIA GPU with CUDA drivers (for GPU modes)
-- 24+ GB VRAM recommended for dual-model GPU mode (Qwen3-32B-AWQ + Qwen3-8B-AWQ)
+- 32GB VRAM required for dual-model GPU mode. KV cache allocation uses approximately 55% of VRAM for the primary model and 75% of remaining VRAM for the fast model, leaving headroom to prevent CPU-side block swapping.
 - Node.js 20+ (for frontend development outside Docker)
 
 ### First-Time Setup
@@ -2756,9 +2824,9 @@ Tests use an in-memory SQLite database with mocked external services:
 
 ### 11. Relevance Threshold Filtering
 
-**Decision**: Exclude articles with `relevance_score < 0.3` from clustering.
+**Decision**: Mark articles with `relevance_score < 0.3` as `is_duplicate = True` to exclude them from all downstream processing.
 
-**Rationale**: SearXNG returns some off-topic results. Without filtering, these create noise clusters that dilute the signal. The 0.3 threshold removes clearly irrelevant articles while keeping marginally relevant ones that might add context.
+**Rationale**: SearXNG returns some off-topic results. Without filtering, these create noise clusters that dilute the signal. The 0.3 threshold removes clearly irrelevant articles while keeping marginally relevant ones that might add context. Reusing the `is_duplicate` flag ensures these articles are consistently filtered from display, clustering, and all downstream tasks without requiring separate filter logic.
 
 **Trade-off**: Some relevant articles with unusual framing may be incorrectly scored below 0.3 and excluded. The threshold is a tunable constant (`RELEVANCE_THRESHOLD` in `services/worker/worker/tasks/relevance.py`).
 
@@ -2778,7 +2846,15 @@ Tests use an in-memory SQLite database with mocked external services:
 
 **Trade-off**: Double GPU memory footprint (primary at 65% + fast at 85% utilization with sequential startup). Requires sufficient VRAM (24+ GB recommended). The fast model disables thinking (`enable_thinking=False`) to avoid unnecessary chain-of-thought overhead.
 
-### 14. Pipeline Stall Detection
+### 14. Deterministic Cluster Labels
+
+**Decision**: Use word frequency analysis with proper noun boosting (`_extract_label_from_titles()`) instead of LLM calls for cluster keyword generation.
+
+**Rationale**: The previous LLM-based approach caused extreme latency with reasoning models (Qwen3-32B-AWQ), which would emit lengthy chain-of-thought before producing a simple 2-4 word label. The deterministic approach counts word frequencies across the top 10 article titles, boosts proper nouns (capitalized words not at the start of a title), and selects the top 2-3 most frequent terms. This produces comparable quality labels with zero LLM overhead.
+
+**Trade-off**: Labels are less creative and may be less grammatically polished than LLM-generated ones. However, the speed improvement (milliseconds vs. seconds per cluster) far outweighs the quality difference for what is essentially a short display label.
+
+### 15. Pipeline Stall Detection
 
 **Decision**: Run a `detect_stalled_pipelines` task every 2 minutes to force-complete stuck pipelines.
 
@@ -2788,9 +2864,58 @@ Tests use an in-memory SQLite database with mocked external services:
 
 ---
 
-## 19. Changelog (v1.0 -> v1.1)
+## 19. Changelog
 
-### New Features
+### v1.1 -> v1.2
+
+#### New Features
+
+1. **Manual Investment Analysis Pipeline Trigger**: New `POST /api/topics/{topic_id}/investment/analyze` endpoint dispatches the full investment pipeline (ticker resolution, market data fetch, analysis generation, correlation signals) on demand with 5-minute rate limiting.
+
+2. **Investment Pipeline Status Diagnostic**: New `GET /api/topics/{topic_id}/investment/status` endpoint returns a 5-step pipeline health view (entity_extraction, ticker_resolution, market_data, analyses, correlation_signals) with counts and readiness indicator.
+
+3. **Investment Pipeline Control UI**: New `InvestmentPipelineControl` component on the investment dashboard page with trigger button, 30-second polling, and 5-step status display.
+
+4. **Deterministic Cluster Labels**: Cluster keyword generation switched from LLM-based to deterministic `_extract_label_from_titles()` using word frequency analysis with proper noun boosting. Eliminates the extreme latency of reasoning models on simple classification tasks.
+
+5. **Three-Step Ticker Resolution**: `resolve_entity_ticker` now uses a 3-step approach: (1) hardcoded common mappings (30+ entries, instant), (2) `pg_trgm` fuzzy match against `ticker_reference` (similarity > 0.3), (3) LLM inference as final fallback. Previously used only reference ILIKE lookup + LLM.
+
+6. **Reprocess Summaries Migration Task**: New `reprocess_summaries` task in `summarize.py` provides a one-time migration to clean chain-of-thought leakage from existing article summaries. Run manually via `celery -A worker.celeryconfig call reprocess_summaries`.
+
+7. **Qdrant Backup/Restore**: `backup.sh` now creates Qdrant collection snapshots alongside PostgreSQL custom-format dumps. `restore.sh` handles both `.dump` (PostgreSQL) and `.snapshot` (Qdrant) file types.
+
+8. **Expanded Seed Topics**: `seed-topics.py` now includes 5 topics (AI Safety, Biotechnology, Semiconductor Industry, Renewable Energy, Cybersecurity Threats), up from 3.
+
+#### Behavioral Changes
+
+- **Low-Relevance Filtering**: Articles scoring below `RELEVANCE_THRESHOLD` (0.3) are now marked as `is_duplicate = True` (previously described as "excluded from clustering"). This reuses the duplicate flag to filter them from display, clustering, and all downstream processing.
+
+- **Worker Connection Pool**: Worker `db.py` pool settings changed to `pool_size=20, max_overflow=15, pool_timeout=60` (was `pool_size=5, max_overflow=10` in docs; actual code had already been updated).
+
+- **Search Query System Prompt**: `search_plan.py` now instructs the LLM to include the current year (2026) in at least one query and generates 1-6 word focused queries rather than open-ended search strings.
+
+#### Configuration Changes
+
+- **SearXNG**: Full configuration now documented including `general` (instance name, metrics), `outgoing` (request_timeout=10.0, pool_connections=100, pool_maxsize=20), `ui`, and `server` (secret_key, bind_address) sections.
+
+- **LOCAL_MODEL_NAME**: Discrepancy identified between Python code default (`Qwen2.5-32B-Instruct-AWQ` in `config.py`) and Docker Compose default (`Qwen3-32B-AWQ` in `docker-compose.yml`). The Docker Compose value takes precedence at runtime. The `.env.example` still references `Qwen2.5-32B-Instruct-AWQ` and should be updated.
+
+#### Frontend Changes
+
+- **New component**: `InvestmentPipelineControl` in `investment/page.tsx` with 5-step pipeline view, trigger button, and 30-second polling.
+- **New API functions**: `getInvestmentStatus()`, `triggerInvestmentAnalysis()`, `verifyAssetMapping()`, `rejectAssetMapping()` in `api-client.ts`.
+- **New types**: `InvestmentPipelineStep`, `InvestmentStatusResponse`, `InvestmentTriggerResponse` in `api-client.ts`.
+- **BriefingView bugfix**: Now handles object-type JSONB fields in `new_entities` and `coverage_gaps` (previously crashed on non-array values).
+
+#### Not Yet Implemented (Frontend Stubs)
+
+- `verifyAssetMapping()` and `rejectAssetMapping()` exist in the frontend API client but have no corresponding backend endpoints (`/api/asset-mappings/{id}/verify`, `/api/asset-mappings/{id}/reject`).
+
+---
+
+### v1.0 -> v1.1
+
+#### New Features
 
 1. **Dual-Model LLM System**: Added `vllm-fast` service running Qwen3-8B-AWQ alongside the primary Qwen3-32B-AWQ model. All 10 task categories default to the fast model for improved throughput.
 
@@ -2816,7 +2941,7 @@ Tests use an in-memory SQLite database with mocked external services:
 
 12. **Search Progress WebSocket**: New `ttwatch:search:progress` pub/sub channel and `ws_search_progress_listener` for real-time search progress updates.
 
-### Model Changes
+#### Model Changes
 
 - **Primary LLM**: QwQ-32B-AWQ -> Qwen3-32B-AWQ
 - **Fast LLM (new)**: Qwen3-8B-AWQ with thinking disabled
@@ -2825,7 +2950,7 @@ Tests use an in-memory SQLite database with mocked external services:
 - **Max model length**: 32768 -> 8192 in GPU-colocated mode (8192 sufficient for all tasks)
 - **Fast model concurrency**: 16 max sequences (vs 8 for primary)
 
-### Infrastructure Changes
+#### Infrastructure Changes
 
 - **API port**: Standardized to 8080 (was 8000 in some configs)
 - **SearXNG host port**: 8888:8080 (was 8080:8080)
@@ -2836,7 +2961,7 @@ Tests use an in-memory SQLite database with mocked external services:
 - **Redis**: Added `--maxmemory 512mb --maxmemory-policy volatile-lru` configuration
 - **Embedder device**: Now configurable via `EMBEDDER_DEVICE` env var (default: `cpu` in gpu.yml, `cuda` in gpu-node.yml)
 
-### API Changes
+#### API Changes
 
 - **Health endpoint**: `/health/extended` renamed to `/health/services`, now also checks vLLM-Fast
 - **Topic articles**: Moved from `GET /api/articles?topic_id=...` to `GET /api/topics/{topic_id}/articles`
@@ -2854,18 +2979,18 @@ Tests use an in-memory SQLite database with mocked external services:
 - **Users**: Moved from `/api/users/me` to `/api/me`
 - **New endpoints**: `/api/topics/{topic_id}/search/cancel`, `/api/topics/{topic_id}/processing-status`, `/api/models/*`
 
-### Environment Variable Changes
+#### Environment Variable Changes
 
 - **New**: `VLLM_FAST_URL`, `FAST_MODEL_NAME`, `EMBEDDING_MODEL_NAME`, `EMBEDDING_DIMENSION`, `EMBEDDER_DEVICE`, `MINIO_URL`, `APP_DB_PASSWORD`, `WORKER_DB_PASSWORD`, `NEXT_PUBLIC_WS_URL`, `INTERNAL_API_URL`
 - **Changed default**: `LOCAL_MODEL_NAME`: `QwQ-32B-AWQ` -> `Qwen3-32B-AWQ`
 - **Changed default**: `MINIO_ACCESS_KEY`/`MINIO_SECRET_KEY`: Now sourced from `MINIO_ROOT_USER`/`MINIO_ROOT_PASSWORD`
 
-### Database Changes
+#### Database Changes
 
 - **New table**: `llm_task_config` (migration 007) with RLS policies and grants
 - **RLS count**: 15 -> 16 tables (added `llm_task_config`)
 
-### Worker Changes
+#### Worker Changes
 
 - **New module**: `llm_router.py` for dual-model task routing
 - **New task**: `detect_stalled_pipelines` (every 2 minutes)
@@ -2876,7 +3001,7 @@ Tests use an in-memory SQLite database with mocked external services:
 - **Fan-out**: Added staggered countdowns (1s, 1s, 3s, 6s, 10s) to prevent transaction race conditions
 - **Trafilatura config**: Custom config with 10s download timeout, 2 max redirects
 
-### Frontend Changes
+#### Frontend Changes
 
 - **New page**: `/dashboard/models` for model status and task routing
 - **New types**: `ModelInfo`, `ModelStatusResponse`, `TaskRoutingEntry`, `TaskRoutingResponse`, `TaskRoutingChange`, `ProcessingStatusResponse`, `SearchStatusResponse`

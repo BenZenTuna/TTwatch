@@ -1,6 +1,6 @@
 # Makefile — common TTwatch operations
 
-.PHONY: dev prod gpu lan cloud stop logs backup restore migrate cleanup-data cleanup-data-dry
+.PHONY: dev prod gpu lan cloud stop logs backup restore migrate cleanup-data cleanup-data-dry verify-vllm
 
 # === Development ===
 dev:
@@ -77,3 +77,7 @@ cleanup-data:
 
 cleanup-data-dry:
 	docker compose exec api python scripts/cleanup_bad_data.py --dry-run
+
+# === GPU Verification ===
+verify-vllm:
+	bash scripts/verify-vllm-memory.sh

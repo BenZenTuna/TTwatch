@@ -16,7 +16,8 @@ services:
       start_period: 60s
 
   # Primary reasoning model — loads FIRST on empty GPU.
-  # 0.65 * 32607 = ~21 GB budget. Model weights ~16.5 GB, leaves ~4.5 GB for KV cache.
+  # 0.55 * 32607 = ~18 GB budget. Model weights ~16.5 GB, leaves ~1.5 GB for KV cache.
+  # Reduced from 0.65 to prevent CPU-side block swapping when sharing GPU with vllm-fast.
   vllm:
     image: vllm/vllm-openai:${VLLM_VERSION:-v0.16.0}
     restart: unless-stopped
@@ -28,9 +29,9 @@ services:
     command: >
       --model /models/${LOCAL_MODEL_NAME:-Qwen3-32B-AWQ}
       --quantization awq_marlin
-      --gpu-memory-utilization 0.65
+      --gpu-memory-utilization 0.55
       --max-model-len 8192
-      --max-num-seqs 8
+      --max-num-seqs 4
       --enable-prefix-caching
       --reasoning-parser deepseek_r1
       --port 8000
@@ -40,10 +41,11 @@ services:
       interval: 10s
       timeout: 10s
       retries: 10
-      start_period: 120s
+      start_period: 180s
 
   # Fast classification model — loads SECOND after vllm is healthy.
-  # 0.85 util so cache budget = total*0.85 - all_used > 0 despite vllm's allocation.
+  # 0.75 util so cache budget = total*0.75 - all_used > 0 despite vllm's allocation.
+  # Reduced from 0.85 to leave KV cache headroom and prevent CPU-side block swapping.
   vllm-fast:
     image: vllm/vllm-openai:${VLLM_VERSION:-v0.16.0}
     restart: unless-stopped
@@ -55,9 +57,9 @@ services:
     command: >
       --model /models/${FAST_MODEL_NAME:-Qwen3-8B-AWQ}
       --quantization awq_marlin
-      --gpu-memory-utilization 0.85
+      --gpu-memory-utilization 0.75
       --max-model-len 8192
-      --max-num-seqs 16
+      --max-num-seqs 8
       --enable-prefix-caching
       --disable-log-requests
       --port 8000
@@ -69,7 +71,7 @@ services:
       interval: 15s
       timeout: 10s
       retries: 10
-      start_period: 120s
+      start_period: 240s
 
   # Override dependencies to include GPU services
   api:
