@@ -44,7 +44,7 @@ services:
       start_period: 180s
 
   # Fast classification model — loads SECOND after vllm is healthy.
-  # 0.75 util so cache budget = total*0.75 - all_used > 0 despite vllm's allocation.
+  # 0.75 util so cache budget = total*0.75 - all_used > 0 despite vllm's allocation. (Qwen3.5-9B-AWQ)
   # Reduced from 0.85 to leave KV cache headroom and prevent CPU-side block swapping.
   vllm-fast:
     image: vllm/vllm-openai:${VLLM_VERSION:-v0.16.0}
@@ -55,7 +55,7 @@ services:
           devices: [{capabilities: [gpu]}]
     volumes: [./models:/models]
     command: >
-      --model /models/${FAST_MODEL_NAME:-Qwen3-8B-AWQ}
+      --model /models/${FAST_MODEL_NAME:-Qwen3.5-9B-AWQ}
       --quantization awq_marlin
       --gpu-memory-utilization 0.75
       --max-model-len 8192

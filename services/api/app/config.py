@@ -27,7 +27,7 @@ class Settings(BaseSettings):
 
     # Fast LLM — lightweight model for classification tasks
     VLLM_FAST_URL: str = "http://vllm-fast:8000/v1"
-    FAST_MODEL_NAME: str = "Qwen3-8B-AWQ"
+    FAST_MODEL_NAME: str = "Qwen3.5-9B-AWQ"
 
     # Embedder — can point to local Docker service OR remote LAN machine
     EMBEDDER_URL: str = "http://embedder:8001"

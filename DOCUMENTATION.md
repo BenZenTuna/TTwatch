@@ -32,7 +32,7 @@
 
 ## 1. Executive Summary
 
-TTwatch is a self-hosted, multi-tenant intelligence monitoring platform that continuously ingests news from the open web, clusters related articles, extracts entities, tracks sentiment, generates analyst-style briefings, and correlates news events with financial market movements. It operates entirely offline (no mandatory cloud dependencies) using dual local LLMs (vLLM serving Qwen3-32B-AWQ as the primary reasoning model and Qwen3-8B-AWQ as a fast classification model) and a local embedding model (Qwen3-Embedding-0.6B), with optional cloud LLM fallback for GPU-less deployments.
+TTwatch is a self-hosted, multi-tenant intelligence monitoring platform that continuously ingests news from the open web, clusters related articles, extracts entities, tracks sentiment, generates analyst-style briefings, and correlates news events with financial market movements. It operates entirely offline (no mandatory cloud dependencies) using dual local LLMs (vLLM serving Qwen3-32B-AWQ as the primary reasoning model and Qwen3.5-9B-AWQ as a fast classification model) and a local embedding model (Qwen3-Embedding-0.6B), with optional cloud LLM fallback for GPU-less deployments.
 
 ### Core Capabilities
 
@@ -114,7 +114,7 @@ TTwatch follows a service-oriented architecture with 12 Docker containers commun
 | **Scheduler** | `scheduler` | Celery Beat scheduler for periodic task dispatch |
 | **Frontend** | `frontend` | Next.js 14.2 single-page application on port 3000 |
 | **vLLM** | `vllm` | GPU-accelerated primary LLM inference (Qwen3-32B-AWQ) for complex reasoning tasks |
-| **vLLM-Fast** | `vllm-fast` | GPU-accelerated fast LLM inference (Qwen3-8B-AWQ) for classification tasks |
+| **vLLM-Fast** | `vllm-fast` | GPU-accelerated fast LLM inference (Qwen3.5-9B-AWQ) for classification tasks |
 | **Embedder** | `embedder` | Embedding server (Qwen3-Embedding-0.6B, 1024 dimensions, GPU or CPU) |
 
 ### Communication Patterns
@@ -152,7 +152,7 @@ TTwatch follows a service-oriented architecture with 12 Docker containers commun
 | LLM Inference (Primary) | vLLM v0.16.0 | `--quantization awq_marlin --gpu-memory-utilization 0.55 --max-model-len 8192 --max-num-seqs 4 --enable-prefix-caching --reasoning-parser deepseek_r1` |
 | LLM Inference (Fast) | vLLM v0.16.0 | `--quantization awq_marlin --gpu-memory-utilization 0.75 --max-model-len 8192 --max-num-seqs 8 --enable-prefix-caching --disable-log-requests` |
 | Primary LLM Model | Qwen3-32B-AWQ | Qwen3 reasoning model, AWQ 4-bit quantization |
-| Fast LLM Model | Qwen3-8B-AWQ | Qwen3 classification model, AWQ 4-bit, thinking disabled via `chat_template_kwargs.enable_thinking=False` |
+| Fast LLM Model | Qwen3.5-9B-AWQ | Qwen3 classification model, AWQ 4-bit, thinking disabled via `chat_template_kwargs.enable_thinking=False` |
 | Embedding Model | Qwen3-Embedding-0.6B | 1024-dimensional embeddings, COSINE distance |
 | Embedding Server | sentence-transformers | FastAPI wrapper, `batch_size=64`, `normalize_embeddings=True`, configurable device (GPU/CPU) |
 | Dimensionality Reduction | UMAP | 1024 to 20 dimensions, cosine metric, `random_state=42` |
@@ -270,7 +270,7 @@ x-common-env: &common-env
   MINIO_BUCKET: ${MINIO_BUCKET:-ttwatch-content}
   LLM_PROVIDER: ${LLM_PROVIDER:-local}
   LOCAL_MODEL_NAME: ${LOCAL_MODEL_NAME:-Qwen3-32B-AWQ}
-  FAST_MODEL_NAME: ${FAST_MODEL_NAME:-Qwen3-8B-AWQ}
+  FAST_MODEL_NAME: ${FAST_MODEL_NAME:-Qwen3.5-9B-AWQ}
   EMBEDDING_MODEL_NAME: ${EMBEDDING_MODEL_NAME:-Qwen/Qwen3-Embedding-0.6B}
   EMBEDDING_DIMENSION: ${EMBEDDING_DIMENSION:-1024}
   JWT_SECRET: ${JWT_SECRET}
@@ -1245,7 +1245,7 @@ def get_llm_for_task(session, user_id: str, task_category: str) -> SyncLLMClient
 
 1. Queries `llm_task_config` table for user-specific routing
 2. Falls back to hardcoded defaults (all tasks default to `fast` model)
-3. Returns `_fast` (Qwen3-8B-AWQ with thinking disabled) or `_primary` (Qwen3-32B-AWQ)
+3. Returns `_fast` (Qwen3.5-9B-AWQ with thinking disabled) or `_primary` (Qwen3-32B-AWQ)
 4. For `auto` target: returns fast client (which itself falls back to primary if unavailable)
 
 ### Task Registry
@@ -2126,7 +2126,7 @@ All settings are managed via environment variables, loaded by Pydantic Settings 
 | `VLLM_URL` | `http://vllm:8000/v1` | Primary vLLM OpenAI-compatible endpoint |
 | `VLLM_FAST_URL` | `http://vllm-fast:8000/v1` | Fast vLLM endpoint for classification tasks |
 | `LOCAL_MODEL_NAME` | `Qwen3-32B-AWQ` | Primary model name (docker-compose default; Python code default is `Qwen2.5-32B-Instruct-AWQ`, overridden at runtime) |
-| `FAST_MODEL_NAME` | `Qwen3-8B-AWQ` | Fast model name |
+| `FAST_MODEL_NAME` | `Qwen3.5-9B-AWQ` | Fast model name |
 | `CLOUD_LLM_PROVIDER` | `openai` | `openai`, `anthropic`, or `openrouter` |
 | `CLOUD_LLM_API_KEY` | (empty) | API key for cloud provider |
 | `CLOUD_LLM_MODEL` | `gpt-4o-mini` | Cloud model name |
@@ -2250,7 +2250,7 @@ From `docker-compose.gpu.yml`:
 
 **Fast model (vllm-fast)**:
 ```
---model /models/Qwen3-8B-AWQ
+--model /models/Qwen3.5-9B-AWQ
 --quantization awq_marlin
 --gpu-memory-utilization 0.75
 --max-model-len 8192
@@ -2344,7 +2344,7 @@ From `docker-compose.gpu.yml`:
 - Admin version status endpoint
 - Full dark-theme frontend with D3 visualizations
 - 4 deployment modes with Docker Compose overlays
-- Dual-model LLM routing (primary Qwen3-32B-AWQ + fast Qwen3-8B-AWQ)
+- Dual-model LLM routing (primary Qwen3-32B-AWQ + fast Qwen3.5-9B-AWQ)
 - Per-user LLM task routing configuration (10 categories)
 - Models dashboard page with health monitoring and routing controls
 - Search progress tracking with multi-phase status (generating_queries -> searching -> processing -> completed)
@@ -2917,7 +2917,7 @@ Tests use an in-memory SQLite database with mocked external services:
 
 #### New Features
 
-1. **Dual-Model LLM System**: Added `vllm-fast` service running Qwen3-8B-AWQ alongside the primary Qwen3-32B-AWQ model. All 10 task categories default to the fast model for improved throughput.
+1. **Dual-Model LLM System**: Added `vllm-fast` service running Qwen3.5-9B-AWQ alongside the primary Qwen3-32B-AWQ model. All 10 task categories default to the fast model for improved throughput.
 
 2. **Per-User LLM Task Routing**: New `llm_task_config` table (migration 007) and `llm_router.py` module allow users to configure which model (primary/fast/auto) handles each task category via the API.
 
@@ -2944,7 +2944,7 @@ Tests use an in-memory SQLite database with mocked external services:
 #### Model Changes
 
 - **Primary LLM**: QwQ-32B-AWQ -> Qwen3-32B-AWQ
-- **Fast LLM (new)**: Qwen3-8B-AWQ with thinking disabled
+- **Fast LLM (new)**: Qwen3.5-9B-AWQ with thinking disabled
 - **vLLM quantization**: `awq` -> `awq_marlin` (optimized kernel) in GPU-colocated mode
 - **GPU memory split**: Primary model uses 0.65 (was 0.85), fast model uses 0.85
 - **Max model length**: 32768 -> 8192 in GPU-colocated mode (8192 sufficient for all tasks)

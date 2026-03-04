@@ -81,6 +81,14 @@ TRACKED_SERVICES = [
         changelog_url="https://huggingface.co/Qwen/Qwen3-32B-AWQ",
     ),
     TrackedService(
+        name="Qwen3.5 Fast Model",
+        env_var="FAST_MODEL_NAME",
+        default="Qwen3.5-9B-AWQ",
+        source_type="huggingface",
+        source_ref="cyankiwi/Qwen3.5-9B-AWQ-4bit",
+        changelog_url="https://huggingface.co/cyankiwi/Qwen3.5-9B-AWQ-4bit",
+    ),
+    TrackedService(
         name="Embedding Model",
         env_var="EMBEDDING_MODEL_NAME",
         default="Qwen/Qwen3-Embedding-0.6B",

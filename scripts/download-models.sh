@@ -39,8 +39,8 @@ download_model() {
 # Main reasoning model (QwQ-32B-AWQ for vllm service)
 download_model "Qwen/Qwen3-32B-AWQ" "Qwen3-32B-AWQ" "18GB"
 
-# Fast classification model (Qwen3-8B-AWQ for vllm-fast service)
-download_model "Qwen/Qwen3-8B-AWQ" "Qwen3-8B-AWQ" "5GB"
+# Fast classification model (Qwen3.5-9B-AWQ for vllm-fast service)
+download_model "cyankiwi/Qwen3.5-9B-AWQ-4bit" "Qwen3.5-9B-AWQ" "6GB"
 
 echo ""
 echo "All models downloaded successfully."

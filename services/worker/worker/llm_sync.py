@@ -261,7 +261,7 @@ _logger = _logging.getLogger(__name__)
 def create_fast_client() -> SyncLLMClient:
     """Create a fast LLM client for simple classification tasks.
 
-    Connects to vllm-fast (Qwen3-8B-AWQ) with thinking disabled.
+    Connects to vllm-fast (Qwen3.5-9B-AWQ) with thinking disabled.
     Falls back to the main model if vllm-fast is unreachable.
     """
     provider = os.environ.get("LLM_PROVIDER", "local")
@@ -273,7 +273,7 @@ def create_fast_client() -> SyncLLMClient:
         _logger.info("VLLM_FAST_URL not set, fast client falling back to main model")
         return SyncLLMClient()
 
-    fast_model = os.environ.get("FAST_MODEL_NAME", "Qwen3-8B-AWQ")
+    fast_model = os.environ.get("FAST_MODEL_NAME", "Qwen3.5-9B-AWQ")
     try:
         client = SyncLLMClient(
             vllm_url=fast_url,
