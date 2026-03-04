@@ -135,9 +135,9 @@ def embed_article(self, user_id: str, article_id: str, topic_id: str = None,
     # After upserting, search for existing articles with cosine > 0.92.
     # Only checks within the same user + topic scope.
     try:
-        similar = _qdrant.search(
+        results = _qdrant.query_points(
             collection_name="articles",
-            query_vector=embeddings[0],
+            query=embeddings[0],
             query_filter=Filter(must=[
                 FieldCondition(key="user_id", match=MatchValue(value=user_id)),
                 FieldCondition(key="topic_id", match=MatchValue(value=str(article.topic_id))),
@@ -145,7 +145,7 @@ def embed_article(self, user_id: str, article_id: str, topic_id: str = None,
             score_threshold=0.92,
             limit=3,
         )
-        for hit in similar:
+        for hit in results.points:
             if str(hit.id) != str(article.id):
                 article.is_duplicate = True
                 article.duplicate_of = hit.id

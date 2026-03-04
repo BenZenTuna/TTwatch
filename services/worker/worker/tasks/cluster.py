@@ -11,6 +11,7 @@ from umap import UMAP
 from hdbscan import HDBSCAN
 from sqlalchemy import select, delete
 from qdrant_client import QdrantClient
+from qdrant_client.http.exceptions import ResponseHandlingException, UnexpectedResponse
 from qdrant_client.models import Filter, FieldCondition, MatchValue
 
 from worker.celeryconfig import app
@@ -89,9 +90,16 @@ CLUSTER_COLORS = [
 ]
 
 
-@app.task(name="recluster_topic", queue="ttwatch:compute")
+@app.task(
+    name="recluster_topic",
+    queue="ttwatch:compute",
+    bind=True,
+    max_retries=3,
+    default_retry_delay=10,
+    autoretry_for=(ResponseHandlingException, ConnectionError, OSError),
+)
 @with_rls_context
-def recluster_topic(user_id: str, topic_id: str, session=None):
+def recluster_topic(self, user_id: str, topic_id: str, session=None):
     """Re-cluster articles for a topic using HDBSCAN.
 
     Two-phase Qdrant scroll:
